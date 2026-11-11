@@ -101,7 +101,8 @@ ol.tips li,ul.tools li{margin-bottom:6px}
 .u-fixed{background:#d0ebff;color:#1864ab}
 .u-ok{background:var(--ok);color:#fff}
 .st{padding:1px 6px;border-radius:8px;font-size:12px;white-space:nowrap}
-.lay{margin-bottom:6px}.lay input{width:56px;padding:6px}
+.lay{margin-bottom:6px;flex-wrap:nowrap;gap:4px;font-size:14px}.lay input{width:46px;padding:6px 4px}
+.seg{margin-bottom:6px;gap:4px}.seg input[type=number]{width:62px;padding:6px}.seg .su{min-width:90px;padding:6px}
 @media print{.st,.u-ng,.u-ok{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
 
 /* 報告 */
@@ -136,7 +137,7 @@ ol.tips li,ul.tools li{margin-bottom:6px}
 <script src="data.js"></script>
 <script>
 'use strict';
-const VERSION = 'v2';
+const VERSION = 'v3';
 
 // ── 小工具 ─────────────────────────────
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
@@ -252,11 +253,10 @@ function unitStatus(u) {
   if (s.ng) return { k: 'fixed', t: '已改善', s };
   return { k: 'ok', t: '合格', s };
 }
-function floorSort(a, b) {
-  // 高樓層在上；B1、B2 在最下面
-  const v = n => { if (/^(R|屋)/i.test(n)) return 999; const m = /^B(\d+)/i.exec(n); if (m) return -parseInt(m[1], 10); const k = parseInt(n, 10); return isNaN(k) ? 0 : k; };
-  return v(b.name) - v(a.name);
-}
+// 樓層名稱 → 數字（B1 = -1、RF／屋突 = 999、看不懂的 = 0）
+const floorNum = n => { if (/^(R|屋)/i.test(n)) return 999; const m = /^B(\d+)/i.exec(n); if (m) return -parseInt(m[1], 10); const k = parseInt(n, 10); return isNaN(k) ? 0 : k; };
+// 高樓層在上；B1、B2 在最下面
+const floorSort = (a, b) => floorNum(b.name) - floorNum(a.name);
 
 // ── 畫面切換 ─────────────────────────────
 let view = { name: 'home' };
@@ -322,11 +322,10 @@ VIEWS.newProject = () => {
   app.innerHTML = `<div class="card">
     <label class="f">建案名稱 *</label><input type="text" id="p_name" placeholder="例：小棒槌一期">
     <label class="f">地址</label><input type="text" id="p_addr">
-    <label class="f">樓層範圍</label>
-    <div class="row"><input type="number" id="p_from" value="2" style="width:80px"> F　到　<input type="number" id="p_to" value="12" style="width:80px"> F</div>
-    <div class="muted">一樓店面、地下室之後可在建案頁「＋新增樓層」自己加。</div>
-    <label class="f">每層戶別（用逗號分開）</label>
-    <input type="text" id="p_units" value="A,B,C" oninput="drawLayouts()">
+    <label class="f">樓層與戶別（戶別用逗號分開）</label>
+    <div id="p_segs">${segRow(2, 12, 'A,B,C')}</div>
+    <button class="btn ghost small" onclick="addSeg()">＋ 加一段（某層以上戶數不同，例如退縮）</button>
+    <div class="muted" style="margin-top:4px">例：2～10F 是 A,B,C,D；11～14F 只剩 A,B，就分兩段。一樓店面、地下室之後可在建案頁自己加。</div>
     <label class="f">各戶別格局（會自動產生對應的檢查表，個別戶驗屋時還能改）</label>
     <div id="p_layouts"></div>
     <label class="row" style="margin-top:10px"><input type="checkbox" id="p_common"> 每戶都檢查公設與停車位</label>
@@ -334,12 +333,26 @@ VIEWS.newProject = () => {
   </div>`;
   drawLayouts();
 };
+function segRow(from, to, units) {
+  return `<div class="seg row"><input type="number" class="sf" value="${esc(from)}"> F ～ <input type="number" class="st2" value="${esc(to)}"> F
+    <input type="text" class="su grow" value="${esc(units)}" oninput="drawLayouts()" placeholder="A,B,C">
+    <button class="btn ghost small" onclick="this.parentNode.remove();drawLayouts()" title="刪除這段">✕</button></div>`;
+}
+function addSeg() {
+  const rows = [...document.querySelectorAll('#p_segs .seg')], last = rows[rows.length - 1];
+  const to = last ? parseInt(last.querySelector('.st2').value, 10) || 1 : 1;
+  const units = last ? last.querySelector('.su').value : 'A,B';
+  document.getElementById('p_segs').insertAdjacentHTML('beforeend', segRow(to + 1, to + 4, units));
+  drawLayouts();
+}
+const readSegs = () => [...document.querySelectorAll('#p_segs .seg')].map(r => ({
+  from: parseInt(r.querySelector('.sf').value, 10), to: parseInt(r.querySelector('.st2').value, 10), units: parseUnits(r.querySelector('.su').value) }));
 const parseUnits = s => [...new Set(s.split(/[,，、\s]+/).map(x => x.trim()).filter(Boolean))].slice(0, 30);
 function drawLayouts() {
   const box = document.getElementById('p_layouts');
   const old = {};
   box.querySelectorAll('[data-u]').forEach(r => { old[r.dataset.u] = [...r.querySelectorAll('input')].map(i => i.value); });
-  box.innerHTML = parseUnits(document.getElementById('p_units').value).map(u => {
+  box.innerHTML = [...new Set(readSegs().flatMap(g => g.units))].map(u => {
     const v = old[u] || [3, 2, 2];
     return `<div class="row lay" data-u="${esc(u)}"><b style="width:44px">${esc(u)} 戶</b>
       <input type="number" value="${esc(v[0])}" min="0" max="8"> 房 <input type="number" value="${esc(v[1])}" min="0" max="6"> 衛 <input type="number" value="${esc(v[2])}" min="0" max="5"> 陽台</div>`;
@@ -348,20 +361,25 @@ function drawLayouts() {
 function createProject() {
   const v = id => document.getElementById(id).value.trim();
   if (!v('p_name')) { toast('請填建案名稱'); return; }
-  const from = parseInt(v('p_from'), 10), to = parseInt(v('p_to'), 10);
-  if (isNaN(from) || isNaN(to) || to < from || to - from > 80) { toast('樓層範圍不對'); return; }
+  const segs = readSegs();
+  if (!segs.length) { toast('請至少設一段樓層'); return; }
+  const byFloor = new Map();
+  for (const g of segs) {
+    if (isNaN(g.from) || isNaN(g.to) || g.to < g.from || g.to - g.from > 80) { toast(`樓層範圍不對：${g.from}～${g.to}F`); return; }
+    if (!g.units.length) { toast(`${g.from}～${g.to}F 沒填戶別`); return; }
+    for (let k = g.from; k <= g.to; k++) {
+      if (k === 0) continue;
+      if (byFloor.has(k)) { toast(`樓層重複：${k > 0 ? k + 'F' : 'B' + (-k)} 在兩段裡都有`); return; }
+      byFloor.set(k, g.units);
+    }
+  }
   const layouts = {};
   document.querySelectorAll('#p_layouts [data-u]').forEach(r => {
     const n = [...r.querySelectorAll('input')].map(i => i.value);
     layouts[r.dataset.u] = { beds: num(n[0], 0, 8), baths: num(n[1], 0, 6), balc: num(n[2], 0, 5), common: document.getElementById('p_common').checked };
   });
-  const names = Object.keys(layouts);
-  if (!names.length) { toast('請填戶別'); return; }
-  const floors = [];
-  for (let k = to; k >= from; k--) {
-    if (k === 0) continue;
-    floors.push({ id: uid(), name: k > 0 ? k + 'F' : 'B' + (-k), units: names.map(n => ({ id: uid(), name: n, layout: { ...layouts[n] }, insp: null })) });
-  }
+  const floors = [...byFloor.keys()].sort((a, b) => b - a).map(k => ({ id: uid(), name: k > 0 ? k + 'F' : 'B' + (-k),
+    units: byFloor.get(k).map(n => ({ id: uid(), name: n, layout: { ...layouts[n] }, insp: null })) }));
   const p = { id: uid(), name: v('p_name'), addr: v('p_addr'), layouts, floors, created: Date.now() };
   state.projects.unshift(p); save();
   stack.pop(); view = { name: 'project', pid: p.id }; history.replaceState({ d: stack.length }, ''); stack.push({ name: 'home' }); render(true);
@@ -388,10 +406,38 @@ VIEWS.project = () => {
   });
   h += `<div class="card noprint">
     <button class="btn ghost block" onclick="addFloor()">＋ 新增樓層（1F、B1…）</button>
+    <button class="btn ghost block" onclick="batchSheet()">🏗 調整某幾層的戶別（退縮、合併戶）</button>
     <button class="btn ghost block" onclick="editProject()">✏️ 修改建案資料</button>
     <button class="btn ghost block" style="color:var(--accent)" onclick="delProject()">🗑 刪除這個建案</button></div>`;
   app.innerHTML = h;
 };
+function batchSheet() {
+  sheet(`<b>調整某幾層的戶別</b>
+    <div class="muted">例：11～14F 只剩 A,B → 這幾層會變成只有 A、B 兩戶（缺的戶自動補上，多的戶刪掉）。</div>
+    <div class="row" style="margin-top:8px"><input type="number" id="b_from" style="width:80px"> F ～ <input type="number" id="b_to" style="width:80px"> F</div>
+    <label class="f">這幾層的戶別</label><input type="text" id="b_units" placeholder="A,B">
+    <button class="btn accent block" onclick="batchApply()">套用</button><button class="btn ghost block" onclick="closeSheet()">取消</button>`);
+}
+async function batchApply() {
+  const p = curP(), from = parseInt(document.getElementById('b_from').value, 10), to = parseInt(document.getElementById('b_to').value, 10);
+  const names = parseUnits(document.getElementById('b_units').value);
+  if (isNaN(from) || isNaN(to) || to < from) { toast('樓層範圍不對'); return; }
+  if (!names.length) { toast('請填戶別'); return; }
+  const floors = p.floors.filter(f => { const k = floorNum(f.name); return k >= from && k <= to && k !== 0 && k !== 999; });
+  if (!floors.length) { toast('這個範圍沒有樓層'); return; }
+  const drop = floors.flatMap(f => f.units.filter(u => !names.includes(u.name)).map(u => ({ f, u })));
+  const kept = drop.filter(x => x.u.insp);
+  const msg = `${floors.map(f => f.name).sort((a, b) => floorNum(a) - floorNum(b)).join('、')} 改成 ${names.join('、')}。`
+    + (drop.length - kept.length ? `\n會刪掉 ${drop.length - kept.length} 戶（還沒驗屋的）。` : '')
+    + (kept.length ? `\n${kept.map(x => unitLabel(x.f, x.u)).join('、')} 已經有驗屋紀錄，會保留不刪。` : '');
+  if (!confirm(msg + '\n\n確定套用？')) return;
+  for (const f of floors) {
+    const old = f.units;
+    f.units = names.map(n => old.find(u => u.name === n) || { id: uid(), name: n, layout: { ...(p.layouts[n] || { beds: 3, baths: 2, balc: 2, common: false }) }, insp: null })
+      .concat(old.filter(u => !names.includes(u.name) && u.insp));
+  }
+  save(); closeSheet(); render(); toast('已調整');
+}
 function addFloor() {
   const p = curP();
   const n = prompt('樓層名稱（例：1F、B1、RF）'); if (!n || !n.trim()) return;
