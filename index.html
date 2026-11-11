@@ -105,6 +105,16 @@ ol.tips li,ul.tools li{margin-bottom:6px}
 .seg{margin-bottom:6px;gap:4px}.seg input[type=number]{width:62px;padding:6px}.seg .su{min-width:90px;padding:6px}
 @media print{.st,.u-ng,.u-ok{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
 
+/* 大類（可展開） */
+.cat{background:#fff;border-radius:12px;margin-bottom:8px;box-shadow:0 1px 3px rgba(0,0,0,.06);overflow:hidden}
+.cat-h{display:flex;align-items:center;gap:6px;padding:14px;cursor:pointer;font-size:17px}
+.cat.open .cat-h{background:#f3f6fa;border-bottom:1px solid var(--line)}
+.cat-h .arrow{color:var(--muted);width:20px;text-align:center}
+.cat-b{padding:10px 12px 14px}
+.def-s{display:flex;align-items:center;gap:6px;padding:10px;margin-top:8px;border:1px solid #f3d3c8;border-radius:10px;background:#fffaf8;cursor:pointer;font-size:15px}
+.def-s.is-fixed{border-color:#a5d8ff;background:#f3f9ff}
+.chk{width:30px;height:30px;border-radius:50%;border:2px solid var(--line);color:transparent;display:flex;align-items:center;justify-content:center;flex:none}
+.chk.on{background:var(--ok);border-color:var(--ok);color:#fff}
 /* 缺失處 */
 .def{background:#fff;border:1px solid #f3d3c8;border-radius:10px;padding:10px;margin-top:8px}
 .def.is-fixed{border-color:#a5d8ff;background:#f3f9ff}
@@ -142,7 +152,7 @@ ol.tips li,ul.tools li{margin-bottom:6px}
 <script src="data.js"></script>
 <script>
 'use strict';
-const VERSION = 'v4';
+const VERSION = 'v5';
 
 // ── 小工具 ─────────────────────────────
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
@@ -151,10 +161,6 @@ const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&a
 const today = () => { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
 const num = (v, min, max) => Math.max(min, Math.min(max, parseInt(v, 10) || 0));
 
-// 檢查項目的「怎麼驗」與常見缺失字，從 data.js 查（不存進每一戶，省空間）
-const HELP = {};
-TRADES.forEach(tp => tp.groups.forEach(([, list]) => list.forEach(it => { if (!HELP[it.t]) HELP[it.t] = it; })));
-const helpOf = it => HELP[it.t] || { h: '', q: [] };
 
 // ── 資料存取（全部放 IndexedDB，整個建案幾百戶也放得下）─────────
 let dbP = null;
@@ -226,18 +232,22 @@ function compress(file) {
 // 建案 project { id, name, addr, layouts, floors:[floor] }
 // 樓層 floor   { id, name, units:[unit] }
 // 戶別 unit    { id, name, layout:{beds,baths,balc,common}, insp:null | insp }
-// 驗屋 insp    { date, inspector, owner, phone, round, locs:[位置名稱], items:[item] }
-// 項目 item    { id, k:工項, g:分組, t:項目, s:''|ok|ng|na, defs:[缺失] }
-// 缺失 def     { id, loc:位置, sev, tags, note, photos, fixed }
-const OTHER = { k: 'other', name: '其他', icon: '📌', groups: [] };
+// 驗屋 insp    { date, inspector, owner, phone, round, locs:[位置], checked:{工項:true}, defs:[缺失] }
+// 缺失 def     { id, k:工項, cat:大類, subs:[小項目], loc:位置, sev, note, photos, fixed }
+// 只記缺失：沒記的就是合格。
+const OTHER = { k: 'other', name: '其他', icon: '📌', cats: [] };
 const tradeOf = k => TRADES.find(t => t.k === k) || OTHER;
-const newItem = (k, g, t) => ({ id: uid(), k, g, t, s: '', defs: [] });
-const newDef = loc => ({ id: uid(), loc: loc || '', sev: 2, tags: [], note: '', photos: [], fixed: false });
-function makeItems(common) {
-  const items = [];
-  TRADES.forEach(tr => { if (tr.optional && !common) return; tr.groups.forEach(([g, list]) => list.forEach(it => items.push(newItem(tr.k, g, it.t)))); });
-  return items;
-}
+const tradeOrder = (a, b) => { const i = k => { const n = TRADES.findIndex(t => t.k === k); return n < 0 ? 99 : n; }; return i(a) - i(b); };
+const newDef = (k, cat) => ({ id: uid(), k, cat, subs: [], loc: '', sev: 2, note: '', photos: [], fixed: false });
+// 空白缺失（什麼都沒選）不算數
+const isEmptyDef = d => !d.subs.length && !d.loc && !d.note && !d.photos.length;
+const realDefs = I => I.defs.filter(d => !isEmptyDef(d));
+// 這一戶要檢查的工項
+const unitTrades = I => {
+  const ks = TRADES.filter(t => !t.optional || I.common).map(t => t.k);
+  realDefs(I).forEach(d => { if (!ks.includes(d.k)) ks.push(d.k); });
+  return ks.sort(tradeOrder);
+};
 // 房間命名：兩房兩衛 → 主臥、次臥；兩房一衛 → 臥室1、臥室2；三房以上 → 主臥、臥室1、臥室2…
 function bedNames(beds, baths) {
   if (beds <= 0) return [];
@@ -259,39 +269,33 @@ function balcNames(n) {
 }
 const makeLocs = L => ['玄關', '客廳', '餐廳', '廚房', ...bedNames(L.beds, L.baths), ...bathNames(L.baths), ...balcNames(L.balc), '走道', '全戶'];
 
-function stats(items) {
-  // total/done/ok/na/ng 以「項目」計；def/fixed 以「缺失處」計
-  const r = { total: 0, done: 0, ok: 0, ng: 0, na: 0, def: 0, fixed: 0 };
-  items.forEach(it => {
-    r.total++; if (it.s) r.done++; if (it.s === 'ok') r.ok++; if (it.s === 'na') r.na++;
-    if (it.s === 'ng') { r.ng++; r.def += it.defs.length; r.fixed += it.defs.filter(d => d.fixed).length; }
-  });
-  return r;
+function stats(I) {
+  const ds = realDefs(I), ks = unitTrades(I);
+  return { def: ds.length, fixed: ds.filter(d => d.fixed).length, trades: ks.length, checked: ks.filter(k => I.checked[k]).length,
+    sev: [1, 2, 3].map(v => ds.filter(d => d.sev === v).length) };
 }
-const unitItems = u => u.insp ? u.insp.items : [];
-const unitPhotos = u => unitItems(u).flatMap(it => it.defs.flatMap(d => d.photos));
+const unitPhotos = u => u.insp ? u.insp.defs.flatMap(d => d.photos) : [];
 const unitLabel = (f, u) => `${f.name}-${u.name}`;
-// 戶別狀態：未驗／驗屋中／有缺失／完成／已改善
+// 戶別狀態：未驗／驗屋中／有缺失／已改善／合格
 function unitStatus(u) {
   if (!u.insp) return { k: 'none', t: '未驗' };
-  const s = stats(unitItems(u)), open = s.def - s.fixed;
+  const s = stats(u.insp), open = s.def - s.fixed;
   if (open > 0) return { k: 'ng', t: `缺失 ${open}`, s };
-  if (!s.total || s.done < s.total) return { k: 'doing', t: `驗屋中 ${s.total ? Math.round(s.done / s.total * 100) : 0}%`, s };
+  if (s.checked < s.trades) return { k: 'doing', t: `驗屋中 ${s.checked}/${s.trades}`, s };
   if (s.def) return { k: 'fixed', t: '已改善', s };
   return { k: 'ok', t: '合格', s };
 }
-// 舊版（依房間分）的驗屋紀錄轉成新版（依工項分）：缺失搬到「其他」工項，位置用原本的房間名稱
+// 舊版紀錄轉成新版（只記缺失）：舊缺失放在原工項（或「其他」）的「舊版紀錄」大類
 function migrateUnit(u) {
-  const old = u.insp; if (!old || !old.rooms) return;
-  const locs = makeLocs(u.layout), items = makeItems(u.layout.common);
-  old.rooms.forEach(r => r.items.forEach(it => {
-    if (it.s !== 'ng') return;
-    if (!locs.includes(r.name)) locs.push(r.name);
-    const ni = newItem('other', '舊版紀錄', it.t); ni.s = 'ng';
-    ni.defs.push({ id: uid(), loc: r.name, sev: it.sev || 2, tags: it.tags || [], note: it.note || '', photos: it.photos || [], fixed: !!it.fixed });
-    items.push(ni);
-  }));
-  u.insp = { date: old.date, inspector: old.inspector, owner: old.owner, phone: old.phone, round: old.round || 1, locs, items };
+  const old = u.insp; if (!old || old.defs) return;
+  const locs = old.locs ? [...old.locs] : makeLocs(u.layout), defs = [];
+  const add = (k, t, d, loc) => {
+    if (loc && !locs.includes(loc)) locs.push(loc);
+    defs.push({ id: uid(), k, cat: '舊版紀錄', subs: [t, ...(d.tags || [])], loc: loc || '', sev: d.sev || 2, note: d.note || '', photos: d.photos || [], fixed: !!d.fixed });
+  };
+  if (old.rooms) old.rooms.forEach(r => r.items.forEach(it => { if (it.s === 'ng') add('other', it.t, it, r.name); }));
+  if (old.items) old.items.forEach(it => { if (it.s === 'ng') it.defs.forEach(d => add(it.k, it.t, d, d.loc)); });
+  u.insp = { date: old.date, inspector: old.inspector, owner: old.owner, phone: old.phone, round: old.round || 1, common: !!u.layout.common, locs, checked: {}, defs };
 }
 // 樓層名稱 → 數字（B1 = -1、RF／屋突 = 999、看不懂的 = 0）
 const floorNum = n => { if (/^(R|屋)/i.test(n)) return 999; const m = /^B(\d+)/i.exec(n); if (m) return -parseInt(m[1], 10); const k = parseInt(n, 10); return isNaN(k) ? 0 : k; };
@@ -565,23 +569,24 @@ VIEWS.unit = () => {
     return;
   }
   const I = u.insp;
+  if (I.defs.some(isEmptyDef)) { I.defs = I.defs.filter(d => !isEmptyDef(d)); save(); } // 離開工項時，什麼都沒選的空白缺失自動丟掉
+  openDefs.clear();
   setHeader(`${label} 戶`, true, ['📋 報告', () => go({ ...view, name: 'report' })]);
-  const s = stats(I.items);
+  const s = stats(I);
   let h = `<div class="card"><div class="stat">
-      <div><b>${s.done}/${s.total}</b>已檢</div><div><b style="color:var(--ok)">${s.ok}</b>合格</div>
-      <div><b style="color:var(--accent)">${s.def}</b>缺失處</div><div><b style="color:#1971c2">${s.fixed}</b>已改善</div></div>
+      <div><b>${s.checked}/${s.trades}</b>工項完成</div><div><b style="color:var(--accent)">${s.def - s.fixed}</b>待改善</div>
+      <div><b style="color:#1971c2">${s.fixed}</b>已改善</div><div><b>${s.def}</b>缺失合計</div></div>
       <div class="muted" style="margin-top:8px">${esc(p.name)} ${esc(label)}　住戶：${esc(I.owner || '—')} ${esc(I.phone || '')}<br>
       ${esc(I.date || '')}　陪驗：${esc(I.inspector || '—')}　第 ${I.round} 次驗屋</div>
       <div class="muted" style="margin-top:6px">📍 位置：${I.locs.map(esc).join('、')} <a href="javascript:editLocs()">修改</a></div></div>`;
-  const ks = [...new Set(I.items.map(it => it.k))].sort((a, b) => TRADES.indexOf(tradeOf(a)) - TRADES.indexOf(tradeOf(b)));
-  ks.forEach(k => {
-    const tr = tradeOf(k), t = stats(I.items.filter(it => it.k === k)), open = t.def - t.fixed;
-    h += `<div class="card list-item" onclick="go({...view,name:'trade',tk:'${k}',f:'all'})">
+  unitTrades(I).forEach(k => {
+    const tr = tradeOf(k), ds = realDefs(I).filter(d => d.k === k), fixed = ds.filter(d => d.fixed).length, open = ds.length - fixed;
+    h += `<div class="card list-item" onclick="go({...view,name:'trade',tk:'${k}'})">
       <div class="ic">${tr.icon}</div>
       <div class="grow"><b>${esc(tr.name)}</b>
-        ${open ? `<span class="badge ng">缺失 ${open}</span>` : ''}${t.fixed ? `<span class="badge fix">改善 ${t.fixed}</span>` : ''}
-        ${t.done === t.total && t.total && !open ? '<span class="badge ok">完成</span>' : ''}
-        <div class="muted">${t.done}/${t.total}</div><div class="bar"><i style="width:${t.total ? t.done / t.total * 100 : 0}%"></i></div></div></div>`;
+        ${open ? `<span class="badge ng">缺失 ${open}</span>` : ''}${fixed ? `<span class="badge fix">改善 ${fixed}</span>` : ''}
+        <div class="muted">${I.checked[k] ? '✔ 檢查完成' : '未完成'}</div></div>
+      <div class="chk ${I.checked[k] ? 'on' : ''}">✔</div></div>`;
   });
   h += `<div class="card noprint">
     <button class="btn ghost block" onclick="editInsp()">✏️ 修改住戶／驗屋資料</button>
@@ -597,7 +602,7 @@ function previewLocs() { document.getElementById('i_locs').textContent = '位置
 function startInsp() {
   const u = curU(), v = id => document.getElementById(id).value.trim();
   u.layout = layoutFromForm();
-  u.insp = { date: v('i_date'), inspector: v('i_insp'), owner: v('i_owner'), phone: v('i_phone'), round: 1, locs: makeLocs(u.layout), items: makeItems(u.layout.common) };
+  u.insp = { date: v('i_date'), inspector: v('i_insp'), owner: v('i_owner'), phone: v('i_phone'), round: 1, common: u.layout.common, locs: makeLocs(u.layout), checked: {}, defs: [] };
   if (v('i_insp')) state.lastInspector = v('i_insp');
   save(); render(true);
 }
@@ -616,18 +621,19 @@ function editInsp() {
     <label class="f">住戶電話</label><input type="text" id="e_phone" value="${esc(I.phone)}">
     <label class="f">驗屋日期</label><input type="date" id="e_date" value="${esc(I.date)}">
     <label class="f">陪驗人員</label><input type="text" id="e_insp" value="${esc(I.inspector)}">
+    <label class="row" style="margin-top:10px"><input type="checkbox" id="e_common" ${I.common ? 'checked' : ''}> 包含公設與停車位檢查</label>
     <button class="btn accent block" onclick="saveInsp()">儲存</button><button class="btn ghost block" onclick="closeSheet()">取消</button>`);
 }
 function saveInsp() {
   const I = curU().insp, v = id => document.getElementById(id).value.trim();
-  I.owner = v('e_owner'); I.phone = v('e_phone'); I.date = v('e_date'); I.inspector = v('e_insp');
+  I.owner = v('e_owner'); I.phone = v('e_phone'); I.date = v('e_date'); I.inspector = v('e_insp'); I.common = document.getElementById('e_common').checked;
   save(); closeSheet(); render();
 }
 function startRecheck() {
   const I = curU().insp;
   if (!confirm(`開始第 ${I.round + 1} 次驗屋（複驗）？\n\n缺失會保留，到現場逐處確認後按「已改善」。驗屋日期會改成今天。`)) return;
   I.round++; I.date = today(); save();
-  toast('已進入複驗，到各工項的「缺失」分頁逐處確認'); render();
+  toast('已進入複驗，到各工項逐處確認'); render();
 }
 async function clearInsp() {
   const f = curF(), u = curU();
@@ -635,88 +641,89 @@ async function clearInsp() {
   await delPhotosOf([u]); u.insp = null; save(); render(true);
 }
 
-// ── 工項檢查表 ─────────────────────────────
+// ── 工項：大類（可展開／收起）→ 缺失 ─────────────
+const openCats = new Set(), openDefs = new Set(), openTips = new Set();
 VIEWS.trade = () => {
   const f = curF(), u = curU(); if (!u || !u.insp) return lost();
-  const tr = tradeOf(view.tk), items = u.insp.items.filter(it => it.k === view.tk);
+  const I = u.insp, tr = tradeOf(view.tk);
+  // 收起來的空白缺失丟掉
+  I.defs = I.defs.filter(d => !isEmptyDef(d) || openDefs.has(d.id));
   setHeader(`${unitLabel(f, u)}｜${tr.name}`, true);
-  const fl = view.f || 'all';
-  const s = stats(items);
-  const cnt = { all: s.total, todo: s.total - s.done, ng: s.ng };
-  let h = `<div class="tabs">${[['all', '全部'], ['todo', '未檢'], ['ng', '缺失']].map(([k, n]) =>
-    `<button class="${fl === k ? 'on' : ''}" onclick="view.f='${k}';render(true)">${n} ${cnt[k]}</button>`).join('')}</div>`;
-  let lastG = null, shown = 0;
-  items.forEach(it => {
-    if (fl === 'todo' && it.s) return;
-    if (fl === 'ng' && it.s !== 'ng') return;
-    if (it.g !== lastG) { h += `<div class="group-h">${esc(it.g)}</div>`; lastG = it.g; }
-    h += itemHTML(it, u.insp, tr); shown++;
+  const mine = I.defs.filter(d => d.k === view.tk);
+  const cats = [...tr.cats];
+  mine.forEach(d => { if (!cats.some(x => x.n === d.cat)) cats.push({ n: d.cat, h: '', s: [] }); });
+  let h = `<div class="muted" style="margin:0 4px 8px">沒記缺失就是合格。點大類打開 →「＋ 新增缺失」→ 選小項目和位置。</div>`;
+  cats.forEach((ct, ci) => {
+    const key = view.tk + '|' + ct.n, open = openCats.has(key);
+    const ds = mine.filter(d => d.cat === ct.n), real = ds.filter(d => !isEmptyDef(d)), openN = real.filter(d => !d.fixed).length;
+    h += `<div class="cat ${open ? 'open' : ''}">
+      <div class="cat-h" onclick="toggleCat(${ci})"><b class="grow">${esc(ct.n)}</b>
+        ${openN ? `<span class="badge ng">缺失 ${openN}</span>` : ''}${real.length - openN ? `<span class="badge fix">改善 ${real.length - openN}</span>` : ''}
+        <span class="arrow">${open ? '▾' : '▸'}</span></div>`;
+    if (open) {
+      h += `<div class="cat-b">`;
+      if (ct.h) h += `<div class="tip">💡 ${esc(ct.h)}</div>`;
+      ds.forEach((d, n) => { h += defHTML(d, n, ct, I, tr); });
+      h += `<button class="btn accent small" style="margin-top:8px" onclick="addDef(${ci})">＋ 新增缺失</button></div>`;
+    }
+    h += `</div>`;
   });
-  if (!shown) h += `<div class="card empty">${fl === 'todo' ? '這個工項都檢查完了 👍' : fl === 'ng' ? '沒有缺失 👍' : '沒有項目'}</div>`;
-  h += `<div class="card noprint">
-    <button class="btn ghost block" onclick="addItem()">＋ 自訂檢查項目</button>
-    <button class="btn ghost block" onclick="restOk()">✔ 其餘未檢項目都設為合格</button></div>`;
+  h += `<button class="btn block ${I.checked[view.tk] ? '' : 'ghost'}" style="margin-top:12px" onclick="toggleChecked()">${I.checked[view.tk] ? '✔ 這個工項檢查完成（點一下取消）' : '這個工項檢查完成'}</button>`;
   app.innerHTML = h;
+  view.cats = cats.map(x => x.n);
 };
-function itemHTML(it, I, tr) {
-  const hp = helpOf(it);
-  const open = it.defs.filter(d => !d.fixed).length;
-  const cls = it.s === 'ng' ? (open ? 's-ng' : 's-ng fixed') : it.s ? 's-' + it.s : '';
-  let h = `<div class="item ${cls}" id="it_${it.id}">
-    <div class="it-top"><div class="it-t">${esc(it.t)}</div>${hp.h ? `<button class="info" onclick="toggleTip('${it.id}')">?</button>` : ''}</div>
-    <div class="tip" id="tip_${it.id}" style="display:${openTips.has(it.id) ? 'block' : 'none'}">${esc(hp.h)}</div>
-    <div class="sbtns">
-      <button class="${it.s === 'ok' ? 'on-ok' : ''}" onclick="setS('${it.id}','ok')">✔ 合格</button>
-      <button class="${it.s === 'ng' ? 'on-ng' : ''}" onclick="setS('${it.id}','ng')">✘ 缺失${it.s === 'ng' ? ' ' + it.defs.length + ' 處' : ''}</button>
-      <button class="${it.s === 'na' ? 'on-na' : ''}" onclick="setS('${it.id}','na')">不適用</button></div>`;
-  if (it.s === 'ng') {
-    it.defs.forEach((d, n) => {
-      const a = `'${it.id}','${d.id}'`;
-      h += `<div class="ngbox def ${d.fixed ? 'is-fixed' : ''}">
-        <div class="row"><b class="grow">第 ${n + 1} 處${d.loc ? '：' + esc(d.loc) : ''}</b><button class="btn ghost small" onclick="delDef(${a})">刪除</button></div>
-        ${tr.noLoc ? '' : `<div class="muted">位置</div><div class="chips">${I.locs.map((l, k) =>
-          `<button class="chip loc ${d.loc === l ? 'on' : ''}" onclick="setLoc(${a},${k})">${esc(l)}</button>`).join('')}</div>`}
-        <div class="muted">嚴重程度</div>
-        <div class="chips">${[[1, '輕微'], [2, '中等'], [3, '嚴重']].map(([v, nm]) =>
-          `<button class="chip sev${v} ${d.sev === v ? 'on' : ''}" onclick="setSev(${a},${v})">${nm}</button>`).join('')}</div>
-        ${hp.q.length ? `<div class="muted">缺失類型（可複選）</div><div class="chips">${hp.q.map((q, k) =>
-          `<button class="chip ${d.tags.includes(q) ? 'on' : ''}" onclick="toggleTag(${a},${k})">${esc(q)}</button>`).join('')}</div>` : ''}
-        <textarea placeholder="補充說明（例：靠窗左側第 3 塊、裂縫約 0.3 mm）" oninput="setNote(${a},this.value)">${esc(d.note)}</textarea>
-        <div class="photos">${d.photos.map(ph => `<div class="ph"><img data-pid="${ph}" onclick="viewPhoto('${ph}')"><button onclick="delPhoto(${a},'${ph}')">✕</button></div>`).join('')}
-          <label class="addph">📷<span>拍照</span><input type="file" accept="image/*" capture="environment" onchange="addPhoto(${a},this)"></label>
-          <label class="addph">🖼️<span>相簿</span><input type="file" accept="image/*" multiple onchange="addPhoto(${a},this)"></label></div>
-        ${I.round > 1 || d.fixed ? `<button class="btn small fixbtn ${d.fixed ? '' : 'ghost'}" onclick="toggleFixed(${a})">${d.fixed ? '✔ 複驗：已改善' : '複驗：標為已改善'}</button>` : ''}
-      </div>`;
-    });
-    h += `<button class="btn ghost small" style="margin-top:8px" onclick="addDef('${it.id}')">＋ 同一項目，再記一處缺失</button>`;
+function defHTML(d, n, ct, I, tr) {
+  const a = `'${d.id}'`;
+  const sum = [d.loc, d.subs.join('、')].filter(Boolean).join('｜') || '（還沒選）';
+  if (!openDefs.has(d.id)) {
+    return `<div class="def-s ${d.fixed ? 'is-fixed' : ''}" onclick="toggleDef(${a})">
+      <span class="grow">${n + 1}. ${esc(sum)}${d.note ? '　' + esc(d.note) : ''}</span>
+      ${d.photos.length ? `<span class="muted">📷${d.photos.length}</span>` : ''}
+      <span class="sev-t s${d.sev}">${SEV[d.sev]}</span>${d.fixed ? '<span class="badge fix">已改善</span>' : ''}</div>`;
   }
-  return h + '</div>';
+  const subs = [...ct.s]; d.subs.forEach(x => { if (!subs.includes(x)) subs.push(x); });
+  return `<div class="ngbox def ${d.fixed ? 'is-fixed' : ''}">
+    <div class="row"><b class="grow">第 ${n + 1} 處</b>
+      <button class="btn ghost small" onclick="toggleDef(${a})">收起</button>
+      <button class="btn ghost small" style="color:var(--accent)" onclick="delDef(${a})">刪除</button></div>
+    <div class="muted">小項目（可複選）</div>
+    <div class="chips">${subs.map((x, k) => `<button class="chip ${d.subs.includes(x) ? 'on' : ''}" onclick="toggleSub(${a},${k})">${esc(x)}</button>`).join('')}</div>
+    ${tr.noLoc ? '' : `<div class="muted">位置</div><div class="chips">${I.locs.map((l, k) =>
+      `<button class="chip loc ${d.loc === l ? 'on' : ''}" onclick="setLoc(${a},${k})">${esc(l)}</button>`).join('')}</div>`}
+    <div class="muted">嚴重程度</div>
+    <div class="chips">${[[1, '輕微'], [2, '中等'], [3, '嚴重']].map(([v, nm]) =>
+      `<button class="chip sev${v} ${d.sev === v ? 'on' : ''}" onclick="setSev(${a},${v})">${nm}</button>`).join('')}</div>
+    <textarea placeholder="補充說明（例：靠窗左側第 3 塊、裂縫約 0.3 mm）" oninput="setNote(${a},this.value)">${esc(d.note)}</textarea>
+    <div class="photos">${d.photos.map(ph => `<div class="ph"><img data-pid="${ph}" onclick="viewPhoto('${ph}')"><button onclick="delPhoto(${a},'${ph}')">✕</button></div>`).join('')}
+      <label class="addph">📷<span>拍照</span><input type="file" accept="image/*" capture="environment" onchange="addPhoto(${a},this)"></label>
+      <label class="addph">🖼️<span>相簿</span><input type="file" accept="image/*" multiple onchange="addPhoto(${a},this)"></label></div>
+    ${I.round > 1 || d.fixed ? `<button class="btn small fixbtn ${d.fixed ? '' : 'ghost'}" onclick="toggleFixed(${a})">${d.fixed ? '✔ 複驗：已改善' : '複驗：標為已改善'}</button>` : ''}
+  </div>`;
 }
-const openTips = new Set();
-const findItem = id => curU().insp.items.find(x => x.id === id);
-const findDef = (id, did) => findItem(id).defs.find(d => d.id === did);
-function toggleTip(id) { openTips.has(id) ? openTips.delete(id) : openTips.add(id); document.getElementById('tip_' + id).style.display = openTips.has(id) ? 'block' : 'none'; }
-function setS(id, s) {
-  const it = findItem(id); it.s = it.s === s ? '' : s;
-  if (it.s === 'ng' && !it.defs.length) it.defs.push(newDef());
-  save(); render();
+const findDef = id => curU().insp.defs.find(d => d.id === id);
+const catDef = n => tradeOf(view.tk).cats.find(x => x.n === n) || { s: [] };
+function toggleCat(ci) { const key = view.tk + '|' + view.cats[ci]; openCats.has(key) ? openCats.delete(key) : openCats.add(key); render(); }
+function toggleDef(id) { openDefs.has(id) ? openDefs.delete(id) : openDefs.add(id); render(); }
+function addDef(ci) {
+  const d = newDef(view.tk, view.cats[ci]); curU().insp.defs.push(d); openDefs.add(d.id); save(); render();
 }
-function addDef(id) { findItem(id).defs.push(newDef()); save(); render(); }
-async function delDef(id, did) {
-  const it = findItem(id), d = findDef(id, did);
-  if ((d.note || d.photos.length || d.loc) && !confirm('刪除這一處缺失（含照片）？')) return;
+async function delDef(id) {
+  const I = curU().insp, d = findDef(id);
+  if (!isEmptyDef(d) && !confirm('刪除這一處缺失（含照片）？')) return;
   for (const ph of d.photos) await photoDel(ph);
-  it.defs = it.defs.filter(x => x !== d);
-  if (!it.defs.length) it.s = '';
-  save(); render();
+  I.defs = I.defs.filter(x => x !== d); openDefs.delete(id); save(); render();
 }
-function setLoc(id, did, k) { const d = findDef(id, did), l = curU().insp.locs[k]; d.loc = d.loc === l ? '' : l; save(); render(); }
-function setSev(id, did, v) { findDef(id, did).sev = v; save(); render(); }
-function toggleTag(id, did, k) { const d = findDef(id, did), q = helpOf(findItem(id)).q[k]; const i = d.tags.indexOf(q); i < 0 ? d.tags.push(q) : d.tags.splice(i, 1); save(); render(); }
-function setNote(id, did, v) { findDef(id, did).note = v; save(); }
-function toggleFixed(id, did) { const d = findDef(id, did); d.fixed = !d.fixed; save(); render(); }
-async function addPhoto(id, did, input) {
-  const d = findDef(id, did);
+function toggleSub(id, k) {
+  const d = findDef(id), subs = [...catDef(d.cat).s]; d.subs.forEach(x => { if (!subs.includes(x)) subs.push(x); });
+  const x = subs[k], i = d.subs.indexOf(x); i < 0 ? d.subs.push(x) : d.subs.splice(i, 1); save(); render();
+}
+function setLoc(id, k) { const d = findDef(id), l = curU().insp.locs[k]; d.loc = d.loc === l ? '' : l; save(); render(); }
+function setSev(id, v) { findDef(id).sev = v; save(); render(); }
+function setNote(id, v) { findDef(id).note = v; save(); }
+function toggleFixed(id) { const d = findDef(id); d.fixed = !d.fixed; save(); render(); }
+function toggleChecked() { const I = curU().insp; I.checked[view.tk] = !I.checked[view.tk]; save(); render(); }
+async function addPhoto(id, input) {
+  const d = findDef(id);
   const files = [...input.files]; input.value = '';
   for (const fl of files) {
     try { const data = await compress(fl); const pid = uid(); await idbPut('photos', pid, data); photoCache[pid] = data; d.photos.push(pid); }
@@ -724,22 +731,12 @@ async function addPhoto(id, did, input) {
   }
   save(); render();
 }
-async function delPhoto(id, did, pid) {
+async function delPhoto(id, pid) {
   if (!confirm('刪除這張照片？')) return;
-  const d = findDef(id, did); d.photos = d.photos.filter(x => x !== pid); save(); await photoDel(pid); render();
+  const d = findDef(id); d.photos = d.photos.filter(x => x !== pid); save(); await photoDel(pid); render();
 }
 function viewPhoto(pid) {
   document.getElementById('layer').innerHTML = `<div class="viewer" onclick="this.remove()"><img src="${photoCache[pid] || ''}"></div>`;
-}
-function addItem() {
-  const t = prompt('檢查項目名稱'); if (!t || !t.trim()) return;
-  curU().insp.items.push(newItem(view.tk, '自訂項目', t.trim())); save(); render();
-}
-function restOk() {
-  const items = curU().insp.items.filter(x => x.k === view.tk && !x.s);
-  if (!items.length) { toast('沒有未檢項目'); return; }
-  if (!confirm(`把 ${items.length} 個未檢項目都設為合格？\n（請確定都實際看過了）`)) return;
-  items.forEach(x => { x.s = 'ok'; }); save(); render();
 }
 
 // ── 彈出視窗 ─────────────────────────────
@@ -748,33 +745,27 @@ function closeSheet() { document.getElementById('layer').innerHTML = ''; }
 
 // ── 單戶驗屋報告（依工項分組，方便直接交給廠商）─────
 const SEV = { 1: '輕微', 2: '中等', 3: '嚴重' };
-const defDesc = (it, d) => `<b>${esc(it.t)}</b>${[d.tags.join('、'), d.note].filter(Boolean).map(x => '<br>' + esc(x)).join('')}
+const defDesc = d => `<b>${esc(d.cat)}</b>${d.subs.length ? '：' + esc(d.subs.join('、')) : ''}${d.note ? '<br>' + esc(d.note) : ''}
   ${d.photos.length ? `<div class="rph">${d.photos.map(ph => `<img data-pid="${ph}">`).join('')}</div>` : ''}`;
-const tradeOrder = (a, b) => TRADES.indexOf(tradeOf(a)) - TRADES.indexOf(tradeOf(b));
 VIEWS.report = () => {
   const p = curP(), f = curF(), u = curU(); if (!u || !u.insp) return lost();
   const I = u.insp, label = unitLabel(f, u);
   setHeader(`${label} 驗屋報告`, true, ['🖨 列印／PDF', () => window.print()]);
-  const s = stats(I.items);
-  const sevCount = { 1: 0, 2: 0, 3: 0 };
-  I.items.forEach(it => { if (it.s === 'ng') it.defs.forEach(d => sevCount[d.sev]++); });
+  const s = stats(I), ds = realDefs(I);
   let n = 0, body = '';
-  [...new Set(I.items.map(it => it.k))].sort(tradeOrder).forEach(k => {
-    const list = I.items.filter(it => it.k === k && it.s === 'ng').flatMap(it => it.defs.map(d => ({ it, d })));
-    if (!list.length) return;
-    const tr = tradeOf(k);
+  [...new Set(ds.map(d => d.k))].sort(tradeOrder).forEach(k => {
+    const list = ds.filter(d => d.k === k), tr = tradeOf(k);
     body += `<h3>${tr.icon} ${esc(tr.name)}（${list.length} 處）</h3>
-      <table><thead><tr><th>#</th><th>位置</th><th>缺失內容</th><th>程度</th><th>狀態</th></tr></thead><tbody>${list.map(({ it, d }) =>
-        `<tr><td>${++n}</td><td>${esc(d.loc || '—')}</td><td>${defDesc(it, d)}</td><td class="sev-t s${d.sev}">${SEV[d.sev]}</td><td>${d.fixed ? '✔ 已改善' : '待改善'}</td></tr>`).join('')}</tbody></table>`;
+      <table><thead><tr><th>#</th><th>位置</th><th>缺失內容</th><th>程度</th><th>狀態</th></tr></thead><tbody>${list.map(d =>
+        `<tr><td>${++n}</td><td>${esc(d.loc || '—')}</td><td>${defDesc(d)}</td><td class="sev-t s${d.sev}">${SEV[d.sev]}</td><td>${d.fixed ? '✔ 已改善' : '待改善'}</td></tr>`).join('')}</tbody></table>`;
   });
-  const todo = s.total - s.done;
+  const todo = s.trades - s.checked;
   app.innerHTML = `<div class="card report">
     <h2>住戶驗屋缺失紀錄表</h2>
     <div>建案：${esc(p.name)}　戶別：<b>${esc(label)}</b><br>地址：${esc(p.addr || '—')}<br>
       住戶：${esc(I.owner || '—')}　${esc(I.phone || '')}<br>驗屋日期：${esc(I.date || '—')}（第 ${I.round} 次）　陪驗人員：${esc(I.inspector || '—')}</div>
-    <p>檢查項目共 ${s.total} 項，合格 ${s.ok} 項、不適用 ${s.na} 項、<b>缺失 ${s.def} 處</b>
-      （嚴重 ${sevCount[3]}、中等 ${sevCount[2]}、輕微 ${sevCount[1]}）${s.fixed ? `，其中已改善 ${s.fixed} 處` : ''}。
-      ${todo ? `<span class="noprint" style="color:var(--accent)">（還有 ${todo} 項未檢查）</span>` : ''}</p>
+    <p><b>缺失共 ${s.def} 處</b>（嚴重 ${s.sev[2]}、中等 ${s.sev[1]}、輕微 ${s.sev[0]}）${s.fixed ? `，其中已改善 ${s.fixed} 處` : ''}；未列出的項目皆為合格。
+      ${todo ? `<span class="noprint" style="color:var(--accent)">（還有 ${todo} 個工項沒按「檢查完成」）</span>` : ''}</p>
     ${n ? body : '<p>本次檢查無缺失。</p>'}
     <p style="font-size:14px;margin-top:16px">以上缺失經雙方現場確認，本公司將於　　年　　月　　日前改善完成，並通知住戶複驗。</p>
     <div class="sign"><div>住戶簽名</div><div>公司陪驗人員</div><div>日期</div></div>
@@ -794,31 +785,27 @@ VIEWS.projReport = () => {
     floors.forEach(f => f.units.forEach(u => {
       const st = unitStatus(u), I = u.insp, s = st.s;
       rows += `<tr><td><b>${esc(unitLabel(f, u))}</b></td><td>${esc(I ? I.owner : '')}</td><td>${esc(I ? I.date : '')}</td>
-        <td>${I ? I.round : ''}</td><td>${s ? s.done + '/' + s.total : ''}</td><td>${s ? s.def : ''}</td><td>${s ? s.fixed : ''}</td>
+        <td>${I ? I.round : ''}</td><td>${s ? s.checked + '/' + s.trades : ''}</td><td>${s ? s.def : ''}</td><td>${s ? s.fixed : ''}</td>
         <td><span class="st u-${st.k}">${st.t}</span></td></tr>`;
     }));
-    body = `<table><thead><tr><th>戶別</th><th>住戶</th><th>驗屋日</th><th>次</th><th>已檢</th><th>缺失處</th><th>已改善</th><th>狀態</th></tr></thead><tbody>${rows}</tbody></table>`;
+    body = `<table><thead><tr><th>戶別</th><th>住戶</th><th>驗屋日</th><th>次</th><th>工項完成</th><th>缺失</th><th>已改善</th><th>狀態</th></tr></thead><tbody>${rows}</tbody></table>`;
   } else {
     // 缺失明細：依工項（廠商）分組，選一個工項就是那家廠商的派工單
     const all = [];
-    floors.forEach(f => f.units.forEach(u => unitItems(u).forEach(it => {
-      if (it.s !== 'ng') return;
-      it.defs.forEach(d => { if (!(view.open && d.fixed)) all.push({ f, u, it, d }); });
-    })));
-    const ks = [...new Set(all.map(x => x.it.k))].sort(tradeOrder);
-    const counts = Object.fromEntries(ks.map(k => [k, all.filter(x => x.it.k === k).length]));
-    const show = ksel ? [ksel] : ks;
+    floors.forEach(f => f.units.forEach(u => { if (u.insp) realDefs(u.insp).forEach(d => { if (!(view.open && d.fixed)) all.push({ f, u, d }); }); }));
+    const ks = [...new Set(all.map(x => x.d.k))].sort(tradeOrder);
+    const counts = Object.fromEntries(ks.map(k => [k, all.filter(x => x.d.k === k).length]));
     body = `<div class="row noprint" style="margin-bottom:8px">
         <select onchange="view.k=this.value;render(true)" style="width:auto;flex:1"><option value="">全部工項（${all.length}）</option>${ks.map(k =>
           `<option value="${k}" ${k === ksel ? 'selected' : ''}>${esc(tradeOf(k).name)}（${counts[k]}）</option>`).join('')}</select>
         <label class="row"><input type="checkbox" ${view.open ? 'checked' : ''} onchange="view.open=this.checked;render(true)"> 只看待改善</label></div>`;
     let any = false;
-    show.forEach(k => {
-      const list = all.filter(x => x.it.k === k); if (!list.length) return; any = true;
+    (ksel ? [ksel] : ks).forEach(k => {
+      const list = all.filter(x => x.d.k === k); if (!list.length) return; any = true;
       const tr = tradeOf(k);
       body += `<h3>${tr.icon} ${esc(tr.name)}（${list.length} 處）</h3>
-        <table><thead><tr><th>戶別</th><th>位置</th><th>缺失內容</th><th>程度</th><th>狀態</th></tr></thead><tbody>${list.map(({ f, u, it, d }) =>
-          `<tr><td><b>${esc(unitLabel(f, u))}</b></td><td>${esc(d.loc || '—')}</td><td>${defDesc(it, d)}</td>
+        <table><thead><tr><th>戶別</th><th>位置</th><th>缺失內容</th><th>程度</th><th>狀態</th></tr></thead><tbody>${list.map(({ f, u, d }) =>
+          `<tr><td><b>${esc(unitLabel(f, u))}</b></td><td>${esc(d.loc || '—')}</td><td>${defDesc(d)}</td>
            <td class="sev-t s${d.sev}">${SEV[d.sev]}</td><td>${d.fixed ? '✔ 已改善' : '待改善'}</td></tr>`).join('')}</tbody></table>`;
     });
     if (!any) body += '<p>沒有缺失。</p>';
@@ -876,8 +863,8 @@ function toast(m) {
   if (!Array.isArray(state.projects)) state.projects = [];
   // 舊版（依房間分）的紀錄轉成依工項分
   let mig = 0;
-  state.projects.forEach(p => p.floors.forEach(f => f.units.forEach(u => { if (u.insp && u.insp.rooms) { migrateUnit(u); mig++; } })));
-  if (mig) { saveNow(); toast(`已把 ${mig} 戶舊版紀錄轉成依工項分類`); }
+  state.projects.forEach(p => p.floors.forEach(f => f.units.forEach(u => { if (u.insp && !u.insp.defs) { migrateUnit(u); mig++; } })));
+  if (mig) { saveNow(); toast(`已把 ${mig} 戶舊版紀錄轉成新格式`); }
   render(true);
   // 請瀏覽器不要在空間不足時自動清掉驗屋資料
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
