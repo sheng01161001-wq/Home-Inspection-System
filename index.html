@@ -153,7 +153,7 @@ ol.tips li,ul.tools li{margin-bottom:6px}
 <script src="data.js"></script>
 <script>
 'use strict';
-const VERSION = 'v7';
+const VERSION = 'v8';
 
 // ── 小工具 ─────────────────────────────
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
@@ -277,11 +277,15 @@ function stats(I) {
 const unitPhotos = u => u.insp ? u.insp.defs.flatMap(d => d.photos) : [];
 const unitLabel = (f, u) => `${f.name}-${u.name}`;
 // 戶別狀態：未驗／驗屋中／有缺失／已改善／合格
+// 第 1 次＝初驗，第 2 次＝複驗，之後第 2 次複驗…
+const roundName = r => r <= 1 ? '初驗' : r === 2 ? '複驗' : `第 ${r - 1} 次複驗`;
+const roundDone = I => (I.done || {})[I.round];
+// 這一輪還沒按「完成」→ 黃色驗屋中；按了完成 → 有待改善紅色、全部改好藍色、沒缺失綠色
 function unitStatus(u) {
   if (!u.insp) return { k: 'none', t: '未驗' };
-  const s = stats(u.insp), open = s.def - s.fixed;
-  if (open > 0) return { k: 'ng', t: `缺失 ${open}`, s };
-  if (s.checked < s.trades) return { k: 'doing', t: `驗屋中 ${s.checked}/${s.trades}`, s };
+  const I = u.insp, s = stats(I), open = s.def - s.fixed, rn = roundName(I.round);
+  if (!roundDone(I)) return { k: 'doing', t: open ? `${rn}中 缺${open}` : `${rn}中`, s };
+  if (open > 0) return { k: 'ng', t: `待改善 ${open}`, s };
   if (s.def) return { k: 'fixed', t: '已改善', s };
   return { k: 'ok', t: '合格', s };
 }
@@ -438,7 +442,7 @@ VIEWS.project = () => {
   let h = `<div class="card"><div class="stat stat5">
       <div><b>${units.length}</b>總戶</div><div><b style="color:var(--ok)">${cnt.ok + cnt.fixed}</b>完成</div>
       <div><b style="color:var(--accent)">${cnt.ng}</b>缺失</div><div><b style="color:#e67700">${cnt.doing}</b>驗中</div><div><b>${cnt.none}</b>未驗</div></div>
-    <div class="muted" style="margin-top:8px;font-size:13px">點戶別進去驗屋；點樓層名稱可新增／刪除戶別。</div><div class="legend"><span class="u-none">未驗</span><span class="u-doing">驗屋中</span><span class="u-ng">有缺失</span><span class="u-fixed">已改善</span><span class="u-ok">合格</span></div></div>`;
+    <div class="muted" style="margin-top:8px;font-size:13px">點戶別進去驗屋；點樓層名稱可新增／刪除戶別。</div><div class="legend"><span class="u-none">未驗</span><span class="u-doing">驗屋中</span><span class="u-ng">待改善</span><span class="u-fixed">已改善</span><span class="u-ok">合格</span></div></div>`;
   [...p.floors].sort(floorSort).forEach(f => {
     h += `<div class="card floor"><button class="fn" onclick="floorMenu('${f.id}')" title="樓層設定">${esc(f.name)}<br><small style="font-weight:normal;color:var(--muted)">⋯</small></button><div class="units">`;
     f.units.forEach(u => {
@@ -577,7 +581,7 @@ VIEWS.unit = () => {
       <div><b>${s.checked}/${s.trades}</b>工項完成</div><div><b style="color:var(--accent)">${s.def - s.fixed}</b>待改善</div>
       <div><b style="color:#1971c2">${s.fixed}</b>已改善</div><div><b>${s.def}</b>缺失合計</div></div>
       <div class="muted" style="margin-top:8px">${esc(p.name)} ${esc(label)}　住戶：${esc(I.owner || '—')} ${esc(I.phone || '')}<br>
-      ${esc(I.date || '')}　陪驗：${esc(I.inspector || '—')}　第 ${I.round} 次驗屋</div>
+      ${esc(I.date || '')}　陪驗：${esc(I.inspector || '—')}　<b>${roundName(I.round)}${roundDone(I) ? '（已完成）' : '（進行中）'}</b></div>
       <div class="muted" style="margin-top:6px">📍 位置：${I.locs.map(esc).join('、')} <a href="javascript:editLocs()">修改</a></div></div>`;
   unitTrades(I).forEach(k => {
     const tr = tradeOf(k), ds = realDefs(I).filter(d => d.k === k), fixed = ds.filter(d => d.fixed).length, open = ds.length - fixed;
@@ -590,7 +594,10 @@ VIEWS.unit = () => {
   });
   h += `<div class="card noprint">
     <button class="btn ghost block" onclick="editInsp()">✏️ 修改住戶／驗屋資料</button>
-    <button class="btn ghost block" onclick="startRecheck()">🔁 開始複驗（第 ${I.round + 1} 次）</button>
+    ${roundDone(I)
+      ? `<button class="btn ghost block" onclick="undoFinish()">✔ ${roundName(I.round)}已完成（${esc(roundDone(I))}）・點這裡取消</button>
+         <button class="btn accent block" onclick="startRecheck()">🔁 開始${roundName(I.round + 1)}</button>`
+      : `<button class="btn accent block" onclick="finishRound()">✔ 完成${roundName(I.round)}</button>`}
     <button class="btn ghost block" style="color:var(--accent)" onclick="clearInsp()">🗑 清除這戶的驗屋紀錄</button></div>`;
   app.innerHTML = h;
 };
@@ -629,10 +636,27 @@ function saveInsp() {
   I.owner = v('e_owner'); I.phone = v('e_phone'); I.date = v('e_date'); I.inspector = v('e_insp'); I.common = document.getElementById('e_common').checked;
   save(); closeSheet(); render();
 }
+function finishRound() {
+  const I = curU().insp, s = stats(I), rn = roundName(I.round), open = s.def - s.fixed;
+  const left = s.trades - s.checked;
+  if (!confirm(`確定完成${rn}？
+
+${left ? `還有 ${left} 個工項沒按「檢查完成」，沒記缺失的都會算合格。
+` : ''}待改善缺失：${open} 處`)) return;
+  unitTrades(I).forEach(k => { I.checked[k] = true; });
+  I.done = I.done || {}; I.done[I.round] = today(); save();
+  toast(open ? `${rn}完成，待改善 ${open} 處。改善好後按「開始${roundName(I.round + 1)}」` : `${rn}完成，全部合格 👍`);
+  render();
+}
+function undoFinish() {
+  const I = curU().insp;
+  if (!confirm(`取消「${roundName(I.round)}已完成」，回到進行中？`)) return;
+  delete I.done[I.round]; save(); render();
+}
 function startRecheck() {
   const I = curU().insp;
-  if (!confirm(`開始第 ${I.round + 1} 次驗屋（複驗）？\n\n缺失會保留，到現場逐處確認後按「已改善」。驗屋日期會改成今天。`)) return;
-  I.round++; I.date = today(); save();
+  if (!confirm(`開始${roundName(I.round + 1)}？\n\n缺失會保留，到現場逐處確認後按「已改善」，看完按「完成${roundName(I.round + 1)}」。驗屋日期會改成今天。`)) return;
+  I.round++; I.date = today(); I.checked = {}; save();
   toast('已進入複驗，到各工項逐處確認'); render();
 }
 async function clearInsp() {
@@ -761,7 +785,7 @@ VIEWS.report = () => {
   app.innerHTML = `<div class="card report">
     <h2>住戶驗屋缺失紀錄表</h2>
     <div>建案：${esc(p.name)}　戶別：<b>${esc(label)}</b><br>地址：${esc(p.addr || '—')}<br>
-      住戶：${esc(I.owner || '—')}　${esc(I.phone || '')}<br>驗屋日期：${esc(I.date || '—')}（第 ${I.round} 次）　陪驗人員：${esc(I.inspector || '—')}</div>
+      住戶：${esc(I.owner || '—')}　${esc(I.phone || '')}<br>驗屋日期：${esc(I.date || '—')}（${roundName(I.round)}${roundDone(I) ? '' : '，進行中'}）　陪驗人員：${esc(I.inspector || '—')}</div>
     <p><b>缺失共 ${s.def} 處</b>${s.fixed ? `，其中已改善 ${s.fixed} 處` : ''}；未列出的項目皆為合格。
       ${todo ? `<span class="noprint" style="color:var(--accent)">（還有 ${todo} 個工項沒按「檢查完成」）</span>` : ''}</p>
     ${n ? body : '<p>本次檢查無缺失。</p>'}
@@ -783,10 +807,10 @@ VIEWS.projReport = () => {
     floors.forEach(f => f.units.forEach(u => {
       const st = unitStatus(u), I = u.insp, s = st.s;
       rows += `<tr><td><b>${esc(unitLabel(f, u))}</b></td><td>${esc(I ? I.owner : '')}</td><td>${esc(I ? I.date : '')}</td>
-        <td>${I ? I.round : ''}</td><td>${s ? s.checked + '/' + s.trades : ''}</td><td>${s ? s.def : ''}</td><td>${s ? s.fixed : ''}</td>
+        <td>${I ? roundName(I.round) : ''}</td><td>${s ? s.checked + '/' + s.trades : ''}</td><td>${s ? s.def : ''}</td><td>${s ? s.fixed : ''}</td>
         <td><span class="st u-${st.k}">${st.t}</span></td></tr>`;
     }));
-    body = `<table><thead><tr><th>戶別</th><th>住戶</th><th>驗屋日</th><th>次</th><th>工項完成</th><th>缺失</th><th>已改善</th><th>狀態</th></tr></thead><tbody>${rows}</tbody></table>`;
+    body = `<table><thead><tr><th>戶別</th><th>住戶</th><th>驗屋日</th><th>階段</th><th>工項完成</th><th>缺失</th><th>已改善</th><th>狀態</th></tr></thead><tbody>${rows}</tbody></table>`;
   } else {
     // 缺失明細：依工項（廠商）分組，選一個工項就是那家廠商的派工單
     const all = [];
