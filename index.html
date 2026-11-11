@@ -153,7 +153,7 @@ ol.tips li,ul.tools li{margin-bottom:6px}
 <script src="data.js"></script>
 <script>
 'use strict';
-const VERSION = 'v6';
+const VERSION = 'v7';
 
 // ── 小工具 ─────────────────────────────
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
@@ -249,12 +249,12 @@ const unitTrades = I => {
   realDefs(I).forEach(d => { if (!ks.includes(d.k)) ks.push(d.k); });
   return ks.sort(tradeOrder);
 };
-// 房間命名：兩房兩衛 → 主臥、次臥；兩房一衛 → 臥室1、臥室2；三房以上 → 主臥、臥室1、臥室2…
+// 房間命名：兩房兩衛 → 主臥室、次臥室；兩房一衛 → 臥室1、臥室2；三房以上 → 主臥室、臥室1、臥室2…
 function bedNames(beds, baths) {
   if (beds <= 0) return [];
   if (beds === 1) return ['臥室'];
-  if (beds === 2) return baths >= 2 ? ['主臥', '次臥'] : ['臥室1', '臥室2'];
-  return ['主臥', ...Array.from({ length: beds - 1 }, (_, k) => '臥室' + (k + 1))];
+  if (beds === 2) return baths >= 2 ? ['主臥室', '次臥室'] : ['臥室1', '臥室2'];
+  return ['主臥室', ...Array.from({ length: beds - 1 }, (_, k) => '臥室' + (k + 1))];
 }
 // 兩衛 → 主衛浴室、次衛浴室
 function bathNames(n) {
@@ -862,7 +862,15 @@ function toast(m) {
   // 舊版（依房間分）的紀錄轉成依工項分
   let mig = 0;
   state.projects.forEach(p => p.floors.forEach(f => f.units.forEach(u => { if (u.insp && !u.insp.defs) { migrateUnit(u); mig++; } })));
-  if (mig) { saveNow(); toast(`已把 ${mig} 戶舊版紀錄轉成新格式`); }
+  // 位置改名：主臥 → 主臥室、次臥 → 次臥室（v7）
+  const RN = { 主臥: '主臥室', 次臥: '次臥室' };
+  state.projects.forEach(p => p.floors.forEach(f => f.units.forEach(u => {
+    const I = u.insp; if (!I || !I.locs) return;
+    if (I.locs.some(l => RN[l]) || I.defs.some(d => RN[d.loc])) {
+      I.locs = [...new Set(I.locs.map(l => RN[l] || l))]; I.defs.forEach(d => { if (RN[d.loc]) d.loc = RN[d.loc]; }); mig++;
+    }
+  })));
+  if (mig) { saveNow(); toast(`已更新 ${mig} 戶的舊資料格式`); }
   render(true);
   // 請瀏覽器不要在空間不足時自動清掉驗屋資料
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
