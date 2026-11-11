@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>小棒槌 驗屋系統</title>
+<meta name="theme-color" content="#1f3a5f">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<style>
+:root{
+  --bg:#eef2f7; --card:#fff; --ink:#16202c; --muted:#627080; --line:#d9e1ea;
+  --accent:#e4572e; --accent-soft:#fdece6; --steel:#1f3a5f; --ok:#2b8a3e; --ok-soft:#e6f4ea;
+  --warn:#d9480f; --na:#868e96;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:"Microsoft JhengHei","PingFang TC","Noto Sans TC",sans-serif;font-size:16px;line-height:1.5;padding-bottom:80px}
+header{position:sticky;top:0;z-index:10;background:var(--steel);color:#fff;padding:10px 14px;padding-top:max(10px,env(safe-area-inset-top));display:flex;align-items:center;gap:10px}
+header h1{font-size:18px;margin:0;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+header button{background:rgba(255,255,255,.15);color:#fff;border:0;border-radius:8px;padding:6px 10px;font-size:15px}
+main{max-width:760px;margin:0 auto;padding:12px}
+.card{background:var(--card);border-radius:12px;padding:14px;margin-bottom:12px;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+.muted{color:var(--muted);font-size:14px}
+.btn{display:inline-block;border:0;border-radius:10px;padding:10px 16px;font-size:16px;background:var(--steel);color:#fff;cursor:pointer;font-family:inherit}
+.btn.accent{background:var(--accent)}
+.btn.ghost{background:#fff;color:var(--steel);border:1px solid var(--line)}
+.btn.small{padding:6px 10px;font-size:14px}
+.btn.block{display:block;width:100%;margin-top:8px}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.grow{flex:1}
+label.f{display:block;margin:8px 0 4px;font-size:14px;color:var(--muted)}
+input[type=text],input[type=date],input[type=number],textarea,select{width:100%;padding:10px;border:1px solid var(--line);border-radius:8px;font-size:16px;font-family:inherit;background:#fff}
+textarea{min-height:60px;resize:vertical}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.list-item{display:flex;align-items:center;gap:12px;cursor:pointer}
+.list-item .ic{font-size:28px;width:40px;text-align:center}
+.bar{height:6px;background:var(--line);border-radius:3px;overflow:hidden;margin-top:6px}
+.bar>i{display:block;height:100%;background:var(--ok)}
+.badge{display:inline-block;border-radius:10px;padding:1px 8px;font-size:13px;background:var(--line);color:var(--ink);margin-left:4px}
+.badge.ng{background:var(--accent);color:#fff}
+.badge.ok{background:var(--ok);color:#fff}
+.badge.fix{background:#1971c2;color:#fff}
+.tabs{display:flex;gap:6px;margin-bottom:10px;position:sticky;top:52px;z-index:5;background:var(--bg);padding:6px 0}
+.tabs button{flex:1;border:1px solid var(--line);background:#fff;border-radius:20px;padding:6px;font-size:14px;font-family:inherit}
+.tabs button.on{background:var(--steel);color:#fff;border-color:var(--steel)}
+.group-h{font-weight:bold;color:var(--steel);margin:16px 4px 6px;font-size:15px}
+.item{background:#fff;border-radius:12px;padding:12px;margin-bottom:8px;border-left:5px solid var(--line)}
+.item.s-ok{border-left-color:var(--ok)}
+.item.s-ng{border-left-color:var(--accent);background:#fffaf8}
+.item.s-na{border-left-color:var(--na);opacity:.7}
+.item.fixed{border-left-color:#1971c2}
+.it-top{display:flex;gap:8px;align-items:flex-start}
+.it-t{flex:1;font-weight:bold}
+.info{border:1px solid var(--line);background:#fff;border-radius:50%;width:28px;height:28px;font-size:14px;color:var(--steel);flex:none}
+.tip{background:#f3f6fa;border-radius:8px;padding:8px 10px;margin-top:6px;font-size:14px;color:#33414f}
+.sbtns{display:flex;gap:6px;margin-top:8px}
+.sbtns button{flex:1;border:1px solid var(--line);background:#fff;border-radius:8px;padding:8px 4px;font-size:15px;font-family:inherit}
+.sbtns .on-ok{background:var(--ok);color:#fff;border-color:var(--ok)}
+.sbtns .on-ng{background:var(--accent);color:#fff;border-color:var(--accent)}
+.sbtns .on-na{background:var(--na);color:#fff;border-color:var(--na)}
+.ngbox{margin-top:10px;border-top:1px dashed var(--line);padding-top:10px}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0}
+.chip{border:1px solid var(--line);background:#fff;border-radius:16px;padding:4px 10px;font-size:14px;font-family:inherit}
+.chip.on{background:var(--accent);border-color:var(--accent);color:#fff}
+.chip.sev1.on{background:#f59f00;border-color:#f59f00}
+.chip.sev3.on{background:#c92a2a;border-color:#c92a2a}
+.photos{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.ph{position:relative;width:76px;height:76px;border-radius:8px;overflow:hidden;background:#ddd}
+.ph img{width:100%;height:100%;object-fit:cover}
+.ph button{position:absolute;top:2px;right:2px;background:rgba(0,0,0,.6);color:#fff;border:0;border-radius:50%;width:22px;height:22px;font-size:12px;line-height:22px;padding:0}
+.addph{width:76px;height:76px;border:2px dashed var(--line);border-radius:8px;display:flex;align-items:center;justify-content:center;flex-direction:column;font-size:13px;color:var(--muted);cursor:pointer;background:#fff}
+.addph input{display:none}
+.fixbtn{margin-top:8px}
+.stat{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;text-align:center}
+.stat b{display:block;font-size:22px}
+.stat div{background:#f3f6fa;border-radius:8px;padding:6px}
+.empty{text-align:center;color:var(--muted);padding:30px 10px}
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:50;display:flex;align-items:flex-end;justify-content:center}
+.modal .sheet{background:#fff;width:100%;max-width:760px;border-radius:16px 16px 0 0;padding:16px;max-height:85vh;overflow:auto}
+.viewer{position:fixed;inset:0;background:#000;z-index:60;display:flex;align-items:center;justify-content:center}
+.viewer img{max-width:100%;max-height:100%}
+.toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#222;color:#fff;padding:8px 16px;border-radius:20px;z-index:70;font-size:14px}
+ol.tips li,ul.tools li{margin-bottom:6px}
+.ver{text-align:center;color:var(--muted);font-size:12px;margin-top:20px}
+
+/* 報告 */
+.report h2{font-size:20px;margin:0 0 4px}
+.report table{width:100%;border-collapse:collapse;font-size:14px}
+.report th,.report td{border:1px solid #bbb;padding:6px;vertical-align:top;text-align:left}
+.report th{background:#eef2f7}
+.report .rph{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px}
+.report .rph img{width:120px;height:90px;object-fit:cover;border:1px solid #ccc}
+.sev-t{font-weight:bold;white-space:nowrap}
+.sev-t.s3{color:#c92a2a}.sev-t.s2{color:var(--warn)}.sev-t.s1{color:#e67700}
+.sign{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:24px}
+.sign div{border-top:1px solid #333;padding-top:4px;font-size:14px;text-align:center}
+@media print{
+  header,.noprint{display:none!important}
+  body{background:#fff;padding:0}
+  main{max-width:none;padding:0}
+  .card{box-shadow:none;padding:0}
+  .report tr{page-break-inside:avoid}
+}
+</style>
+</head>
+<body>
+<header>
+  <button id="backBtn" onclick="goBack()" style="display:none">‹ 返回</button>
+  <h1 id="title">小棒槌 驗屋系統</h1>
+  <button id="hdrRight" style="display:none"></button>
+</header>
+<main id="app"></main>
+<div id="layer"></div>
+
+<script src="data.js"></script>
+<script>
+'use strict';
+const VERSION = 'v1';
+const LS_KEY = 'hi_cases_v1';
+
+// ── 資料存取 ─────────────────────────────
+let cases = [];
+try { cases = JSON.parse(localStorage.getItem(LS_KEY) || '[]'); } catch (e) { cases = []; }
+function save() {
+  try { localStorage.setItem(LS_KEY, JSON.stringify(cases)); }
+  catch (e) { toast('儲存失敗：手機空間不足'); }
+}
+// 本地日期 YYYY-MM-DD（toISOString 是 UTC，台灣早上 8 點前會變昨天）
+const today = () => { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+// 照片存 IndexedDB（量大，localStorage 放不下）
+let dbP = null;
+function db() {
+  if (!dbP) dbP = new Promise((res, rej) => {
+    const r = indexedDB.open('home-inspection', 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('photos');
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  });
+  return dbP;
+}
+async function photoPut(id, data) {
+  const d = await db();
+  return new Promise((res, rej) => { const t = d.transaction('photos', 'readwrite'); t.objectStore('photos').put(data, id); t.oncomplete = res; t.onerror = () => rej(t.error); });
+}
+async function photoGet(id) {
+  const d = await db();
+  return new Promise(res => { const r = d.transaction('photos').objectStore('photos').get(id); r.onsuccess = () => res(r.result); r.onerror = () => res(null); });
+}
+async function photoDel(id) {
+  delete photoCache[id];
+  const d = await db();
+  return new Promise(res => { const t = d.transaction('photos', 'readwrite'); t.objectStore('photos').delete(id); t.oncomplete = res; t.onerror = res; });
+}
+const photoCache = {};
+async function hydratePhotos(root) {
+  for (const img of (root || document).querySelectorAll('img[data-pid]')) {
+    const id = img.dataset.pid;
+    if (!photoCache[id]) photoCache[id] = await photoGet(id);
+    if (photoCache[id]) img.src = photoCache[id];
+  }
+}
+// 壓縮照片：長邊 1280px、JPEG 品質 0.7
+function compress(file) {
+  return new Promise((res, rej) => {
+    const url = URL.createObjectURL(file);
+    const im = new Image();
+    im.onload = () => {
+      const k = Math.min(1, 1280 / Math.max(im.width, im.height));
+      const c = document.createElement('canvas');
+      c.width = Math.round(im.width * k); c.height = Math.round(im.height * k);
+      c.getContext('2d').drawImage(im, 0, 0, c.width, c.height);
+      URL.revokeObjectURL(url);
+      res(c.toDataURL('image/jpeg', 0.7));
+    };
+    im.onerror = () => { URL.revokeObjectURL(url); rej(new Error('讀不到照片')); };
+    im.src = url;
+  });
+}
+
+// ── 建立案件、空間 ─────────────────────────
+function makeRoom(type, name) {
+  const tp = TEMPLATES[type];
+  const items = [];
+  tp.groups.forEach(([g, list]) => list.forEach(it => items.push({ id: uid(), g, t: it.t, h: it.h, q: it.q, s: '', sev: 2, note: '', tags: [], photos: [], fixed: false })));
+  return { id: uid(), type, name: name || tp.name, items };
+}
+function newCase(f) {
+  const rooms = [makeRoom('doc'), makeRoom('entry'), makeRoom('living'), makeRoom('kitchen')];
+  for (let n = 1; n <= f.beds; n++) rooms.push(makeRoom('bed', n === 1 ? '主臥室' : '臥室' + n));
+  for (let n = 1; n <= f.baths; n++) rooms.push(makeRoom('bath', n === 1 ? (f.baths > 1 ? '主臥浴室' : '浴室') : '浴室' + n));
+  for (let n = 1; n <= f.balc; n++) rooms.push(makeRoom('balcony', f.balc === 1 ? '陽台' : (n === 1 ? '前陽台' : n === 2 ? '工作陽台' : '陽台' + n)));
+  rooms.push(makeRoom('mep'));
+  if (f.common) rooms.push(makeRoom('common'));
+  const c = { id: uid(), name: f.name, addr: f.addr, date: f.date, inspector: f.inspector, owner: f.owner, round: 1, rooms, created: Date.now() };
+  cases.unshift(c); save(); return c;
+}
+function stats(items) {
+  const r = { total: 0, done: 0, ok: 0, ng: 0, na: 0, fixed: 0 };
+  items.forEach(it => { r.total++; if (it.s) r.done++; if (it.s === 'ok') r.ok++; if (it.s === 'na') r.na++; if (it.s === 'ng') { r.ng++; if (it.fixed) r.fixed++; } });
+  return r;
+}
+const allItems = c => c.rooms.flatMap(r => r.items);
+
+// ── 畫面 ─────────────────────────────────
+let view = { name: 'home' };
+const stack = [];
+const app = document.getElementById('app');
+// 每換一頁寫一筆瀏覽器歷史，手機返回鍵／手勢才會回上一頁而不是跳出 App
+function go(v) { stack.push(view); view = v; history.pushState({ d: stack.length }, ''); render(true); }
+function goBack() { if (stack.length) history.back(); else { view = { name: 'home' }; render(true); } }
+window.addEventListener('popstate', () => {
+  const l = document.getElementById('layer');
+  if (l.innerHTML) { l.innerHTML = ''; history.pushState({ d: stack.length }, ''); return; } // 先關掉彈出視窗
+  view = stack.pop() || { name: 'home' }; render(true);
+});
+function curCase() { return cases.find(c => c.id === view.cid); }
+function curRoom() { const c = curCase(); return c && c.rooms.find(r => r.id === view.rid); }
+
+function setHeader(title, back, right) {
+  document.getElementById('title').textContent = title;
+  document.getElementById('backBtn').style.display = back ? '' : 'none';
+  const b = document.getElementById('hdrRight');
+  if (right) { b.style.display = ''; b.textContent = right[0]; b.onclick = right[1]; } else b.style.display = 'none';
+}
+
+function render(top) {
+  const y = window.scrollY;
+  ({ home: vHome, newCase: vNewCase, case: vCase, room: vRoom, report: vReport, guide: vGuide }[view.name] || vHome)();
+  hydratePhotos(app);
+  window.scrollTo(0, top ? 0 : y);
+}
+
+function vHome() {
+  setHeader('小棒槌 驗屋系統', false, ['📘 驗屋要領', () => go({ name: 'guide' })]);
+  let h = `<button class="btn accent block" onclick="go({name:'newCase'})">＋ 新增驗屋案件</button><div style="height:12px"></div>`;
+  if (!cases.length) h += `<div class="card empty">還沒有案件<br>按上面「新增驗屋案件」開始</div>`;
+  cases.forEach(c => {
+    const s = stats(allItems(c));
+    h += `<div class="card list-item" onclick="go({name:'case',cid:'${c.id}'})">
+      <div class="ic">🏠</div>
+      <div class="grow"><b>${esc(c.name)}</b><span class="badge">第${c.round}次</span>
+        <div class="muted">${esc(c.addr || '')} ${esc(c.date || '')}</div>
+        <div class="muted">已檢 ${s.done}/${s.total}　缺失 <b style="color:var(--accent)">${s.ng}</b>${s.fixed ? '　已改善 ' + s.fixed : ''}</div>
+        <div class="bar"><i style="width:${s.total ? s.done / s.total * 100 : 0}%"></i></div>
+      </div></div>`;
+  });
+  h += `<div class="card noprint"><b>資料備份</b><div class="muted">資料只存在這支手機，換手機或清除瀏覽器資料前請先匯出備份（含照片）。</div>
+    <div class="row" style="margin-top:8px"><button class="btn ghost small" onclick="exportAll()">匯出備份</button>
+    <label class="btn ghost small">匯入備份<input type="file" accept=".json,application/json" style="display:none" onchange="importAll(this)"></label></div></div>
+    <div class="ver">版本 ${VERSION}</div>`;
+  app.innerHTML = h;
+}
+
+function vNewCase() {
+  setHeader('新增驗屋案件', true);
+  app.innerHTML = `<div class="card">
+    <label class="f">案名／戶別 *</label><input type="text" id="f_name" placeholder="例：○○建案 A棟 5F">
+    <label class="f">地址</label><input type="text" id="f_addr">
+    <div class="row"><div class="grow"><label class="f">驗屋日期</label><input type="date" id="f_date" value="${today()}"></div>
+    <div class="grow"><label class="f">驗屋人員</label><input type="text" id="f_insp"></div></div>
+    <label class="f">屋主</label><input type="text" id="f_owner">
+    <label class="f">格局（會自動建立對應的檢查表）</label>
+    <div class="grid3">
+      <div><div class="muted">房間數</div><input type="number" id="f_beds" value="3" min="0" max="8"></div>
+      <div><div class="muted">衛浴數</div><input type="number" id="f_baths" value="2" min="0" max="6"></div>
+      <div><div class="muted">陽台數</div><input type="number" id="f_balc" value="2" min="0" max="5"></div>
+    </div>
+    <label class="row" style="margin-top:10px"><input type="checkbox" id="f_common" checked> 包含公設與停車位檢查</label>
+    <button class="btn accent block" onclick="createCase()">建立並開始驗屋</button>
+  </div>`;
+}
+function createCase() {
+  const v = id => document.getElementById(id).value.trim();
+  const n = (id, max) => Math.max(0, Math.min(max, parseInt(v(id), 10) || 0));
+  if (!v('f_name')) { toast('請填案名'); return; }
+  const c = newCase({ name: v('f_name'), addr: v('f_addr'), date: v('f_date'), inspector: v('f_insp'), owner: v('f_owner'),
+    beds: n('f_beds', 8), baths: n('f_baths', 6), balc: n('f_balc', 5), common: document.getElementById('f_common').checked });
+  view = { name: 'case', cid: c.id }; render(true);
+}
+
+function vCase() {
+  const c = curCase(); if (!c) { view = { name: 'home' }; return vHome(); }
+  setHeader(c.name, true, ['📋 報告', () => go({ name: 'report', cid: c.id })]);
+  const s = stats(allItems(c));
+  let h = `<div class="card"><div class="stat">
+      <div><b>${s.done}/${s.total}</b>已檢</div><div><b style="color:var(--ok)">${s.ok}</b>合格</div>
+      <div><b style="color:var(--accent)">${s.ng}</b>缺失</div><div><b style="color:#1971c2">${s.fixed}</b>已改善</div></div>
+      <div class="muted" style="margin-top:8px">${esc(c.addr || '')}　${esc(c.date || '')}　驗屋：${esc(c.inspector || '—')}　第 ${c.round} 次驗屋</div></div>`;
+  c.rooms.forEach(r => {
+    const t = stats(r.items);
+    h += `<div class="card list-item" onclick="go({name:'room',cid:'${c.id}',rid:'${r.id}',f:'all'})">
+      <div class="ic">${TEMPLATES[r.type] ? TEMPLATES[r.type].icon : '📍'}</div>
+      <div class="grow"><b>${esc(r.name)}</b>
+        ${t.ng ? `<span class="badge ng">缺失 ${t.ng}</span>` : ''}${t.fixed ? `<span class="badge fix">改善 ${t.fixed}</span>` : ''}
+        ${t.done === t.total && t.total ? '<span class="badge ok">完成</span>' : ''}
+        <div class="muted">${t.done}/${t.total}</div><div class="bar"><i style="width:${t.total ? t.done / t.total * 100 : 0}%"></i></div></div></div>`;
+  });
+  h += `<div class="card noprint">
+    <button class="btn ghost block" onclick="addRoomSheet()">＋ 新增空間（書房、儲藏室…）</button>
+    <button class="btn ghost block" onclick="editCase()">✏️ 修改案件資料</button>
+    <button class="btn ghost block" onclick="startRecheck()">🔁 開始複驗（第 ${c.round + 1} 次）</button>
+    <button class="btn ghost block" style="color:var(--accent)" onclick="delCase()">🗑 刪除這個案件</button></div>`;
+  app.innerHTML = h;
+}
+
+function vRoom() {
+  const c = curCase(), r = curRoom(); if (!r) { view = { name: 'home' }; return vHome(); }
+  setHeader(r.name, true);
+  const f = view.f || 'all';
+  const s = stats(r.items);
+  const cnt = { all: s.total, todo: s.total - s.done, ng: s.ng };
+  let h = `<div class="tabs">${[['all', '全部'], ['todo', '未檢'], ['ng', '缺失']].map(([k, n]) =>
+    `<button class="${f === k ? 'on' : ''}" onclick="view.f='${k}';render(true)">${n} ${cnt[k]}</button>`).join('')}</div>`;
+  let lastG = null, shown = 0;
+  r.items.forEach(it => {
+    if (f === 'todo' && it.s) return;
+    if (f === 'ng' && it.s !== 'ng') return;
+    if (it.g !== lastG) { h += `<div class="group-h">${esc(it.g)}</div>`; lastG = it.g; }
+    h += itemHTML(it); shown++;
+  });
+  if (!shown) h += `<div class="card empty">${f === 'todo' ? '這個空間都檢查完了 👍' : f === 'ng' ? '沒有缺失 👍' : '沒有項目'}</div>`;
+  h += `<div class="card noprint">
+    <button class="btn ghost block" onclick="addItem()">＋ 自訂檢查項目</button>
+    <button class="btn ghost block" onclick="restOk()">✔ 其餘未檢項目都設為合格</button>
+    <button class="btn ghost block" onclick="renameRoom()">✏️ 改空間名稱</button>
+    <button class="btn ghost block" style="color:var(--accent)" onclick="delRoom()">🗑 刪除這個空間</button></div>`;
+  app.innerHTML = h;
+}
+
+function itemHTML(it) {
+  const cls = it.s === 'ng' ? (it.fixed ? 's-ng fixed' : 's-ng') : it.s ? 's-' + it.s : '';
+  let h = `<div class="item ${cls}" id="it_${it.id}">
+    <div class="it-top"><div class="it-t">${esc(it.t)}</div>${it.h ? `<button class="info" onclick="toggleTip('${it.id}')">?</button>` : ''}</div>
+    <div class="tip" id="tip_${it.id}" style="display:${openTips.has(it.id) ? 'block' : 'none'}">${esc(it.h)}</div>
+    <div class="sbtns">
+      <button class="${it.s === 'ok' ? 'on-ok' : ''}" onclick="setS('${it.id}','ok')">✔ 合格</button>
+      <button class="${it.s === 'ng' ? 'on-ng' : ''}" onclick="setS('${it.id}','ng')">✘ 缺失</button>
+      <button class="${it.s === 'na' ? 'on-na' : ''}" onclick="setS('${it.id}','na')">不適用</button></div>`;
+  if (it.s === 'ng') {
+    h += `<div class="ngbox">
+      <div class="muted">嚴重程度</div>
+      <div class="chips">${[[1, '輕微'], [2, '中等'], [3, '嚴重']].map(([v, n]) =>
+        `<button class="chip sev${v} ${it.sev === v ? 'on' : ''}" onclick="setSev('${it.id}',${v})">${n}</button>`).join('')}</div>
+      ${it.q && it.q.length ? `<div class="muted">缺失類型（可複選）</div><div class="chips">${it.q.map((q, k) =>
+        `<button class="chip ${it.tags.includes(q) ? 'on' : ''}" onclick="toggleTag('${it.id}',${k})">${esc(q)}</button>`).join('')}</div>` : ''}
+      <textarea placeholder="位置與說明（例：靠窗左側第 3 塊、裂縫約 0.3 mm）" oninput="setNote('${it.id}',this.value)">${esc(it.note)}</textarea>
+      <div class="photos">${it.photos.map(p => `<div class="ph"><img data-pid="${p}" onclick="viewPhoto('${p}')"><button onclick="delPhoto('${it.id}','${p}')">✕</button></div>`).join('')}
+        <label class="addph">📷<span>拍照</span><input type="file" accept="image/*" capture="environment" onchange="addPhoto('${it.id}',this)"></label>
+        <label class="addph">🖼️<span>相簿</span><input type="file" accept="image/*" multiple onchange="addPhoto('${it.id}',this)"></label></div>
+      ${curCase().round > 1 || it.fixed ? `<button class="btn small fixbtn ${it.fixed ? '' : 'ghost'}" onclick="toggleFixed('${it.id}')">${it.fixed ? '✔ 複驗：已改善' : '複驗：標為已改善'}</button>` : ''}
+    </div>`;
+  }
+  return h + '</div>';
+}
+
+// ── 項目操作 ─────────────────────────────
+const openTips = new Set();
+function findItem(id) { return curRoom().items.find(x => x.id === id); }
+function toggleTip(id) { openTips.has(id) ? openTips.delete(id) : openTips.add(id); document.getElementById('tip_' + id).style.display = openTips.has(id) ? 'block' : 'none'; }
+function setS(id, s) { const it = findItem(id); it.s = it.s === s ? '' : s; if (it.s !== 'ng') it.fixed = false; save(); render(); }
+function setSev(id, v) { findItem(id).sev = v; save(); render(); }
+function toggleTag(id, k) { const it = findItem(id), q = it.q[k]; const i = it.tags.indexOf(q); i < 0 ? it.tags.push(q) : it.tags.splice(i, 1); save(); render(); }
+let noteTimer;
+function setNote(id, v) { findItem(id).note = v; clearTimeout(noteTimer); noteTimer = setTimeout(save, 300); }
+// 切走或關 App 時立刻存，避免最後打的字沒存到
+document.addEventListener('visibilitychange', () => { if (document.hidden) { clearTimeout(noteTimer); save(); } });
+window.addEventListener('pagehide', () => { clearTimeout(noteTimer); save(); });
+function toggleFixed(id) { const it = findItem(id); it.fixed = !it.fixed; save(); render(); }
+async function addPhoto(id, input) {
+  const it = findItem(id);
+  const files = [...input.files]; input.value = '';
+  for (const f of files) {
+    try { const data = await compress(f); const pid = uid(); await photoPut(pid, data); photoCache[pid] = data; it.photos.push(pid); }
+    catch (e) { toast('照片儲存失敗：' + e.message); }
+  }
+  save(); render();
+}
+async function delPhoto(id, pid) {
+  if (!confirm('刪除這張照片？')) return;
+  const it = findItem(id); it.photos = it.photos.filter(p => p !== pid); save(); await photoDel(pid); render();
+}
+function viewPhoto(pid) {
+  const l = document.getElementById('layer');
+  l.innerHTML = `<div class="viewer" onclick="this.remove()"><img src="${photoCache[pid] || ''}"></div>`;
+}
+function addItem() {
+  const t = prompt('檢查項目名稱'); if (!t || !t.trim()) return;
+  curRoom().items.push({ id: uid(), g: '自訂項目', t: t.trim(), h: '', q: [], s: '', sev: 2, note: '', tags: [], photos: [], fixed: false });
+  save(); render();
+}
+function restOk() {
+  const r = curRoom(); const n = r.items.filter(x => !x.s).length;
+  if (!n) { toast('沒有未檢項目'); return; }
+  if (!confirm(`把 ${n} 個未檢項目都設為合格？\n（請確定都實際看過了）`)) return;
+  r.items.forEach(x => { if (!x.s) x.s = 'ok'; }); save(); render();
+}
+function renameRoom() { const r = curRoom(); const n = prompt('空間名稱', r.name); if (n && n.trim()) { r.name = n.trim(); save(); render(); } }
+async function delRoom() {
+  const c = curCase(), r = curRoom();
+  if (!confirm(`刪除「${r.name}」和裡面所有紀錄、照片？`)) return;
+  for (const it of r.items) for (const p of it.photos) await photoDel(p);
+  c.rooms = c.rooms.filter(x => x !== r); save(); goBack();
+}
+
+// ── 案件操作 ─────────────────────────────
+function sheet(html) { document.getElementById('layer').innerHTML = `<div class="modal" onclick="if(event.target===this)closeSheet()"><div class="sheet">${html}</div></div>`; }
+function closeSheet() { document.getElementById('layer').innerHTML = ''; }
+function addRoomSheet() {
+  sheet(`<b>新增哪一種空間？</b><div class="muted">會帶入該類空間的標準檢查項目</div>
+    ${Object.entries(TEMPLATES).map(([k, t]) => `<button class="btn ghost block" onclick="addRoom('${k}')">${t.icon} ${t.name}</button>`).join('')}
+    <button class="btn block" onclick="closeSheet()">取消</button>`);
+}
+function addRoom(type) {
+  const n = prompt('空間名稱', TEMPLATES[type].name); if (n === null) return;
+  curCase().rooms.push(makeRoom(type, n.trim() || TEMPLATES[type].name)); save(); closeSheet(); render();
+}
+function editCase() {
+  const c = curCase();
+  sheet(`<b>修改案件資料</b>
+    <label class="f">案名</label><input type="text" id="e_name" value="${esc(c.name)}">
+    <label class="f">地址</label><input type="text" id="e_addr" value="${esc(c.addr)}">
+    <label class="f">驗屋日期</label><input type="date" id="e_date" value="${esc(c.date)}">
+    <label class="f">驗屋人員</label><input type="text" id="e_insp" value="${esc(c.inspector)}">
+    <label class="f">屋主</label><input type="text" id="e_owner" value="${esc(c.owner)}">
+    <button class="btn accent block" onclick="saveCaseEdit()">儲存</button><button class="btn ghost block" onclick="closeSheet()">取消</button>`);
+}
+function saveCaseEdit() {
+  const c = curCase(), v = id => document.getElementById(id).value.trim();
+  c.name = v('e_name') || c.name; c.addr = v('e_addr'); c.date = v('e_date'); c.inspector = v('e_insp'); c.owner = v('e_owner');
+  save(); closeSheet(); render();
+}
+function startRecheck() {
+  const c = curCase();
+  if (!confirm(`開始第 ${c.round + 1} 次驗屋（複驗）？\n\n缺失項目會保留，到現場逐項確認後按「已改善」。驗屋日期會改成今天。`)) return;
+  c.round++; c.date = today(); save();
+  toast('已進入複驗，到各空間的「缺失」分頁逐項確認'); render();
+}
+async function delCase() {
+  const c = curCase();
+  if (!confirm(`刪除案件「${c.name}」？所有紀錄和照片都會刪掉，無法復原。\n（建議先回首頁匯出備份）`)) return;
+  for (const it of allItems(c)) for (const p of it.photos) await photoDel(p);
+  cases = cases.filter(x => x !== c); save(); view = { name: 'home' }; stack.length = 0; render(true);
+}
+
+// ── 報告 ─────────────────────────────────
+const SEV = { 1: '輕微', 2: '中等', 3: '嚴重' };
+function vReport() {
+  const c = curCase(); if (!c) { view = { name: 'home' }; return vHome(); }
+  setHeader('驗屋報告', true, ['🖨 列印／PDF', () => window.print()]);
+  const s = stats(allItems(c));
+  const sevCount = { 1: 0, 2: 0, 3: 0 };
+  allItems(c).forEach(it => { if (it.s === 'ng') sevCount[it.sev]++; });
+  let n = 0, rows = '';
+  c.rooms.forEach(r => r.items.forEach(it => {
+    if (it.s !== 'ng') return;
+    n++;
+    const desc = [it.tags.join('、'), it.note].filter(Boolean).map(esc).join('<br>');
+    rows += `<tr><td>${n}</td><td>${esc(r.name)}</td><td><b>${esc(it.t)}</b>${desc ? '<br>' + desc : ''}
+      ${it.photos.length ? `<div class="rph">${it.photos.map(p => `<img data-pid="${p}">`).join('')}</div>` : ''}</td>
+      <td class="sev-t s${it.sev}">${SEV[it.sev]}</td><td>${it.fixed ? '✔ 已改善' : '待改善'}</td></tr>`;
+  }));
+  const todo = s.total - s.done;
+  app.innerHTML = `<div class="card report">
+    <h2>驗屋缺失報告</h2>
+    <div>案名：${esc(c.name)}<br>地址：${esc(c.addr || '—')}<br>驗屋日期：${esc(c.date || '—')}（第 ${c.round} 次）<br>
+      驗屋人員：${esc(c.inspector || '—')}　屋主：${esc(c.owner || '—')}</div>
+    <p>檢查項目共 ${s.total} 項，合格 ${s.ok} 項、不適用 ${s.na} 項、<b>缺失 ${s.ng} 項</b>
+      （嚴重 ${sevCount[3]}、中等 ${sevCount[2]}、輕微 ${sevCount[1]}）${s.fixed ? `，其中已改善 ${s.fixed} 項` : ''}。
+      ${todo ? `<span class="noprint" style="color:var(--accent)">（還有 ${todo} 項未檢查）</span>` : ''}</p>
+    ${n ? `<table><thead><tr><th>#</th><th>位置</th><th>缺失內容</th><th>程度</th><th>狀態</th></tr></thead><tbody>${rows}</tbody></table>`
+        : '<p>本次檢查無缺失。</p>'}
+    <p style="font-size:14px;margin-top:16px">以上缺失請賣方於　　年　　月　　日前改善完成，並通知買方複驗。改善完成前買方保留不辦理交屋之權利。</p>
+    <div class="sign"><div>買方（屋主）</div><div>賣方代表</div><div>日期</div></div>
+  </div>
+  <div class="card noprint muted">按右上「列印／PDF」，印表機選「另存為 PDF」，就能存成 PDF 傳給建商。手機 Chrome：右上選單 → 分享 → 列印。</div>`;
+}
+
+// ── 驗屋要領 ─────────────────────────────
+function vGuide() {
+  setHeader('驗屋要領', true);
+  app.innerHTML = `<div class="card"><b>📋 驗屋流程與心法</b><ol class="tips">${TIPS.map(t => `<li>${esc(t)}</li>`).join('')}</ol></div>
+    <div class="card"><b>🧰 要帶的工具</b><ul class="tools">${TOOLS.map(([a, b]) => `<li><b>${esc(a)}</b>：${esc(b)}</li>`).join('')}</ul></div>
+    <div class="card muted">每個檢查項目旁邊的「?」有怎麼驗和參考標準。標準為業界常用值，實際以買賣合約與建商施工規範為準。</div>`;
+}
+
+// ── 備份 ─────────────────────────────────
+async function exportAll() {
+  const photos = {};
+  for (const c of cases) for (const it of allItems(c)) for (const p of it.photos) photos[p] = photoCache[p] || await photoGet(p);
+  const blob = new Blob([JSON.stringify({ app: 'home-inspection', ver: 1, cases, photos })], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = `驗屋備份_${today()}.json`;
+  a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+async function importAll(input) {
+  const f = input.files[0]; input.value = ''; if (!f) return;
+  try {
+    const d = JSON.parse(await f.text());
+    if (d.app !== 'home-inspection' || !Array.isArray(d.cases)) throw new Error('不是驗屋備份檔');
+    let add = 0;
+    for (const c of d.cases) {
+      if (cases.some(x => x.id === c.id)) continue;
+      cases.push(c); add++;
+      for (const it of allItems(c)) for (const p of it.photos) if (d.photos && d.photos[p]) await photoPut(p, d.photos[p]);
+    }
+    save(); toast(`匯入 ${add} 個案件${d.cases.length - add ? `（${d.cases.length - add} 個已存在略過）` : ''}`); render();
+  } catch (e) { toast('匯入失敗：' + e.message); }
+}
+
+function toast(m) {
+  const t = document.createElement('div'); t.className = 'toast'; t.textContent = m;
+  document.body.appendChild(t); setTimeout(() => t.remove(), 2500);
+}
+
+render(true);
+// 請瀏覽器不要在空間不足時自動清掉驗屋資料
+if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
+if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js');
+</script>
+</body>
+</html>
