@@ -118,6 +118,7 @@ ol.tips li,ul.tools li{margin-bottom:6px}
 /* 缺失處 */
 .def{background:#fff;border:1px solid #f3d3c8;border-radius:10px;padding:10px;margin-top:8px}
 .def.is-fixed{border-color:#a5d8ff;background:#f3f9ff}
+.chip.type.on{background:#5f3dc4;border-color:#5f3dc4}
 .chip.loc.on{background:var(--steel);border-color:var(--steel)}
 .report h3{font-size:16px;margin:16px 0 6px;color:var(--steel)}
 /* 報告 */
@@ -152,7 +153,7 @@ ol.tips li,ul.tools li{margin-bottom:6px}
 <script src="data.js"></script>
 <script>
 'use strict';
-const VERSION = 'v5';
+const VERSION = 'v6';
 
 // ── 小工具 ─────────────────────────────
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
@@ -233,14 +234,14 @@ function compress(file) {
 // 樓層 floor   { id, name, units:[unit] }
 // 戶別 unit    { id, name, layout:{beds,baths,balc,common}, insp:null | insp }
 // 驗屋 insp    { date, inspector, owner, phone, round, locs:[位置], checked:{工項:true}, defs:[缺失] }
-// 缺失 def     { id, k:工項, cat:大類, subs:[小項目], loc:位置, sev, note, photos, fixed }
+// 缺失 def     { id, k:工項, cat:大類, type:種類, subs:[小項目], loc:位置, note, photos, fixed }（sev 嚴重程度已停用，舊資料留著不顯示）
 // 只記缺失：沒記的就是合格。
 const OTHER = { k: 'other', name: '其他', icon: '📌', cats: [] };
 const tradeOf = k => TRADES.find(t => t.k === k) || OTHER;
 const tradeOrder = (a, b) => { const i = k => { const n = TRADES.findIndex(t => t.k === k); return n < 0 ? 99 : n; }; return i(a) - i(b); };
-const newDef = (k, cat) => ({ id: uid(), k, cat, subs: [], loc: '', sev: 2, note: '', photos: [], fixed: false });
+const newDef = (k, cat) => ({ id: uid(), k, cat, type: '', subs: [], loc: '', note: '', photos: [], fixed: false });
 // 空白缺失（什麼都沒選）不算數
-const isEmptyDef = d => !d.subs.length && !d.loc && !d.note && !d.photos.length;
+const isEmptyDef = d => !d.type && !d.subs.length && !d.loc && !d.note && !d.photos.length;
 const realDefs = I => I.defs.filter(d => !isEmptyDef(d));
 // 這一戶要檢查的工項
 const unitTrades = I => {
@@ -271,8 +272,7 @@ const makeLocs = L => ['玄關', '客廳', '餐廳', '廚房', ...bedNames(L.bed
 
 function stats(I) {
   const ds = realDefs(I), ks = unitTrades(I);
-  return { def: ds.length, fixed: ds.filter(d => d.fixed).length, trades: ks.length, checked: ks.filter(k => I.checked[k]).length,
-    sev: [1, 2, 3].map(v => ds.filter(d => d.sev === v).length) };
+  return { def: ds.length, fixed: ds.filter(d => d.fixed).length, trades: ks.length, checked: ks.filter(k => I.checked[k]).length };
 }
 const unitPhotos = u => u.insp ? u.insp.defs.flatMap(d => d.photos) : [];
 const unitLabel = (f, u) => `${f.name}-${u.name}`;
@@ -674,25 +674,24 @@ VIEWS.trade = () => {
 };
 function defHTML(d, n, ct, I, tr) {
   const a = `'${d.id}'`;
-  const sum = [d.loc, d.subs.join('、')].filter(Boolean).join('｜') || '（還沒選）';
+  const sum = [d.loc, d.type, d.subs.join('、')].filter(Boolean).join('｜') || '（還沒選）';
   if (!openDefs.has(d.id)) {
     return `<div class="def-s ${d.fixed ? 'is-fixed' : ''}" onclick="toggleDef(${a})">
       <span class="grow">${n + 1}. ${esc(sum)}${d.note ? '　' + esc(d.note) : ''}</span>
       ${d.photos.length ? `<span class="muted">📷${d.photos.length}</span>` : ''}
-      <span class="sev-t s${d.sev}">${SEV[d.sev]}</span>${d.fixed ? '<span class="badge fix">已改善</span>' : ''}</div>`;
+      ${d.fixed ? '<span class="badge fix">已改善</span>' : ''}</div>`;
   }
   const subs = [...ct.s]; d.subs.forEach(x => { if (!subs.includes(x)) subs.push(x); });
   return `<div class="ngbox def ${d.fixed ? 'is-fixed' : ''}">
     <div class="row"><b class="grow">第 ${n + 1} 處</b>
       <button class="btn ghost small" onclick="toggleDef(${a})">收起</button>
       <button class="btn ghost small" style="color:var(--accent)" onclick="delDef(${a})">刪除</button></div>
+    ${ct.t && ct.t.length ? `<div class="muted">種類</div><div class="chips">${ct.t.map((x, k) =>
+      `<button class="chip type ${d.type === x ? 'on' : ''}" onclick="setType(${a},${k})">${esc(x)}</button>`).join('')}</div>` : ''}
     <div class="muted">小項目（可複選）</div>
     <div class="chips">${subs.map((x, k) => `<button class="chip ${d.subs.includes(x) ? 'on' : ''}" onclick="toggleSub(${a},${k})">${esc(x)}</button>`).join('')}</div>
     ${tr.noLoc ? '' : `<div class="muted">位置</div><div class="chips">${I.locs.map((l, k) =>
       `<button class="chip loc ${d.loc === l ? 'on' : ''}" onclick="setLoc(${a},${k})">${esc(l)}</button>`).join('')}</div>`}
-    <div class="muted">嚴重程度</div>
-    <div class="chips">${[[1, '輕微'], [2, '中等'], [3, '嚴重']].map(([v, nm]) =>
-      `<button class="chip sev${v} ${d.sev === v ? 'on' : ''}" onclick="setSev(${a},${v})">${nm}</button>`).join('')}</div>
     <textarea placeholder="補充說明（例：靠窗左側第 3 塊、裂縫約 0.3 mm）" oninput="setNote(${a},this.value)">${esc(d.note)}</textarea>
     <div class="photos">${d.photos.map(ph => `<div class="ph"><img data-pid="${ph}" onclick="viewPhoto('${ph}')"><button onclick="delPhoto(${a},'${ph}')">✕</button></div>`).join('')}
       <label class="addph">📷<span>拍照</span><input type="file" accept="image/*" capture="environment" onchange="addPhoto(${a},this)"></label>
@@ -718,7 +717,7 @@ function toggleSub(id, k) {
   const x = subs[k], i = d.subs.indexOf(x); i < 0 ? d.subs.push(x) : d.subs.splice(i, 1); save(); render();
 }
 function setLoc(id, k) { const d = findDef(id), l = curU().insp.locs[k]; d.loc = d.loc === l ? '' : l; save(); render(); }
-function setSev(id, v) { findDef(id).sev = v; save(); render(); }
+function setType(id, k) { const d = findDef(id), x = catDef(d.cat).t[k]; d.type = d.type === x ? '' : x; save(); render(); }
 function setNote(id, v) { findDef(id).note = v; save(); }
 function toggleFixed(id) { const d = findDef(id); d.fixed = !d.fixed; save(); render(); }
 function toggleChecked() { const I = curU().insp; I.checked[view.tk] = !I.checked[view.tk]; save(); render(); }
@@ -744,8 +743,7 @@ function sheet(html) { document.getElementById('layer').innerHTML = `<div class=
 function closeSheet() { document.getElementById('layer').innerHTML = ''; }
 
 // ── 單戶驗屋報告（依工項分組，方便直接交給廠商）─────
-const SEV = { 1: '輕微', 2: '中等', 3: '嚴重' };
-const defDesc = d => `<b>${esc(d.cat)}</b>${d.subs.length ? '：' + esc(d.subs.join('、')) : ''}${d.note ? '<br>' + esc(d.note) : ''}
+const defDesc = d => `<b>${esc(d.cat)}${d.type ? '（' + esc(d.type) + '）' : ''}</b>${d.subs.length ? '：' + esc(d.subs.join('、')) : ''}${d.note ? '<br>' + esc(d.note) : ''}
   ${d.photos.length ? `<div class="rph">${d.photos.map(ph => `<img data-pid="${ph}">`).join('')}</div>` : ''}`;
 VIEWS.report = () => {
   const p = curP(), f = curF(), u = curU(); if (!u || !u.insp) return lost();
@@ -756,15 +754,15 @@ VIEWS.report = () => {
   [...new Set(ds.map(d => d.k))].sort(tradeOrder).forEach(k => {
     const list = ds.filter(d => d.k === k), tr = tradeOf(k);
     body += `<h3>${tr.icon} ${esc(tr.name)}（${list.length} 處）</h3>
-      <table><thead><tr><th>#</th><th>位置</th><th>缺失內容</th><th>程度</th><th>狀態</th></tr></thead><tbody>${list.map(d =>
-        `<tr><td>${++n}</td><td>${esc(d.loc || '—')}</td><td>${defDesc(d)}</td><td class="sev-t s${d.sev}">${SEV[d.sev]}</td><td>${d.fixed ? '✔ 已改善' : '待改善'}</td></tr>`).join('')}</tbody></table>`;
+      <table><thead><tr><th>#</th><th>位置</th><th>缺失內容</th><th>狀態</th></tr></thead><tbody>${list.map(d =>
+        `<tr><td>${++n}</td><td>${esc(d.loc || '—')}</td><td>${defDesc(d)}</td><td>${d.fixed ? '✔ 已改善' : '待改善'}</td></tr>`).join('')}</tbody></table>`;
   });
   const todo = s.trades - s.checked;
   app.innerHTML = `<div class="card report">
     <h2>住戶驗屋缺失紀錄表</h2>
     <div>建案：${esc(p.name)}　戶別：<b>${esc(label)}</b><br>地址：${esc(p.addr || '—')}<br>
       住戶：${esc(I.owner || '—')}　${esc(I.phone || '')}<br>驗屋日期：${esc(I.date || '—')}（第 ${I.round} 次）　陪驗人員：${esc(I.inspector || '—')}</div>
-    <p><b>缺失共 ${s.def} 處</b>（嚴重 ${s.sev[2]}、中等 ${s.sev[1]}、輕微 ${s.sev[0]}）${s.fixed ? `，其中已改善 ${s.fixed} 處` : ''}；未列出的項目皆為合格。
+    <p><b>缺失共 ${s.def} 處</b>${s.fixed ? `，其中已改善 ${s.fixed} 處` : ''}；未列出的項目皆為合格。
       ${todo ? `<span class="noprint" style="color:var(--accent)">（還有 ${todo} 個工項沒按「檢查完成」）</span>` : ''}</p>
     ${n ? body : '<p>本次檢查無缺失。</p>'}
     <p style="font-size:14px;margin-top:16px">以上缺失經雙方現場確認，本公司將於　　年　　月　　日前改善完成，並通知住戶複驗。</p>
@@ -804,9 +802,9 @@ VIEWS.projReport = () => {
       const list = all.filter(x => x.d.k === k); if (!list.length) return; any = true;
       const tr = tradeOf(k);
       body += `<h3>${tr.icon} ${esc(tr.name)}（${list.length} 處）</h3>
-        <table><thead><tr><th>戶別</th><th>位置</th><th>缺失內容</th><th>程度</th><th>狀態</th></tr></thead><tbody>${list.map(({ f, u, d }) =>
+        <table><thead><tr><th>戶別</th><th>位置</th><th>缺失內容</th><th>狀態</th></tr></thead><tbody>${list.map(({ f, u, d }) =>
           `<tr><td><b>${esc(unitLabel(f, u))}</b></td><td>${esc(d.loc || '—')}</td><td>${defDesc(d)}</td>
-           <td class="sev-t s${d.sev}">${SEV[d.sev]}</td><td>${d.fixed ? '✔ 已改善' : '待改善'}</td></tr>`).join('')}</tbody></table>`;
+           <td>${d.fixed ? '✔ 已改善' : '待改善'}</td></tr>`).join('')}</tbody></table>`;
     });
     if (!any) body += '<p>沒有缺失。</p>';
   }
