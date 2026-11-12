@@ -139,12 +139,25 @@ ol.tips li,ul.tools li{margin-bottom:6px}
   .card{box-shadow:none;padding:0}
   .report tr{page-break-inside:avoid}
 }
+/* 帳號、同步、鎖定 */
+#sync{font-size:12px;opacity:.9;white-space:nowrap}
+.rtag{display:inline-block;font-size:12px;border-radius:8px;padding:0 6px;margin-right:4px;background:#e7f5ff;color:#1864ab;white-space:nowrap}
+.rtag.r2{background:#fff4e6;color:#d9480f}.rtag.r3{background:#ebfbee;color:#2b8a3e}
+.lockbar{background:#fff9db;border:1px solid #ffe066;border-radius:10px;padding:8px 10px;margin:0 0 10px;font-size:14px}
+.user-row{display:flex;align-items:center;gap:8px;padding:10px 0;border-bottom:1px solid var(--line);cursor:pointer}
+.user-row:last-child{border-bottom:0}
+input[type=password]{width:100%;padding:10px;border:1px solid var(--line);border-radius:8px;font-size:16px;font-family:inherit;background:#fff}
+input:disabled{background:#f1f3f5;color:#868e96}
+.login{max-width:380px;margin:40px auto}
+.stage{display:flex;gap:6px;margin-top:4px}.stage label{flex:1;border:1px solid var(--line);border-radius:10px;padding:10px;text-align:center;background:#fff}
+.stage input{margin-right:4px}
 </style>
 </head>
 <body>
 <header>
   <button id="backBtn" onclick="goBack()" style="display:none">‹ 返回</button>
   <h1 id="title">小棒槌 驗屋系統</h1>
+  <span id="sync" onclick="syncNow()"></span>
   <button id="hdrRight" style="display:none"></button>
 </header>
 <main id="app"></main>
@@ -153,7 +166,9 @@ ol.tips li,ul.tools li{margin-bottom:6px}
 <script src="data.js"></script>
 <script>
 'use strict';
-const VERSION = 'v8';
+const VERSION = 'v9';
+// 後端網址（Google Apps Script 網頁應用程式）
+const API_DEFAULT = 'https://script.google.com/macros/s/AKfycbxmuP-JQyjoIb58P8j83R6sA1WJMGBON3WHP_gNVDLKDmSkIhdKoVuBJx7iNASHRCwe/exec';
 
 // ── 小工具 ─────────────────────────────
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
@@ -161,9 +176,14 @@ const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&a
 // 本地日期 YYYY-MM-DD（toISOString 是 UTC，台灣早上 8 點前會變昨天）
 const today = () => { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
 const num = (v, min, max) => Math.max(min, Math.min(max, parseInt(v, 10) || 0));
+const clone = o => JSON.parse(JSON.stringify(o));
 
+// 本機測試可用 ?api=網址 改連模擬後端
+const LOCAL = /^(localhost|127\.0\.0\.1)$/.test(location.hostname);
+(() => { const q = new URLSearchParams(location.search).get('api'); if (q && LOCAL) localStorage.setItem('hinsp_api', q); })();
+const API = (LOCAL && localStorage.getItem('hinsp_api')) || API_DEFAULT;
 
-// ── 資料存取（全部放 IndexedDB，整個建案幾百戶也放得下）─────────
+// ── 本機暫存（IndexedDB）：雲端資料的副本＋還沒上傳的修改 ─────────
 let dbP = null;
 function db() {
   if (!dbP) dbP = new Promise((res, rej) => {
@@ -191,25 +211,49 @@ async function photoDel(id) {
   const d = await db();
   return new Promise(res => { const t = d.transaction('photos', 'readwrite'); t.objectStore('photos').delete(id); t.oncomplete = res; t.onerror = res; });
 }
+const CK = 'cache:' + API, OK = 'outbox:' + API;
 let state = { projects: [] };
+// 待上傳：ph 照片、p 建案結構、u 戶別驗屋、del 刪除的建案（數字是修改序號，上傳中又改了就再傳一次）
+let outbox = { ph: [], p: {}, u: {}, del: [], dropU: {} }, seq = 0;
 let saveTimer, saving = Promise.resolve();
-function save() { clearTimeout(saveTimer); saveTimer = setTimeout(saveNow, 200); }
-function saveNow() {
+function persist() { clearTimeout(saveTimer); saveTimer = setTimeout(persistNow, 200); scheduleSync(); }
+function persistNow() {
   clearTimeout(saveTimer);
-  saving = saving.then(() => idbPut('kv', 'state', state)).catch(e => toast('儲存失敗：' + e.message));
+  saving = saving.then(() => Promise.all([idbPut('kv', CK, { projects: state.projects }), idbPut('kv', OK, outbox)])).catch(e => toast('儲存失敗：' + e.message));
+  setSyncUI();
   return saving;
 }
-// 切走或關 App 時立刻存
-document.addEventListener('visibilitychange', () => { if (document.hidden) saveNow(); });
-window.addEventListener('pagehide', saveNow);
+// 改了驗屋紀錄 / 建案結構
+function saveU(u, p) { p = p || curP(); u = u || curU(); outbox.u[u.id] = { pid: p.id, n: ++seq }; persist(); }
+function saveP(p) { p = p || curP(); outbox.p[p.id] = ++seq; persist(); }
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) persistNow();
+  else if (auth && Date.now() - lastPull > 30000) pull(true);
+});
+window.addEventListener('pagehide', persistNow);
+window.addEventListener('online', () => syncNow());
 
-const photoCache = {};
+const photoCache = {}, fetchingPh = new Set();
 async function hydratePhotos(root) {
+  const need = [];
   for (const img of (root || document).querySelectorAll('img[data-pid]')) {
     const id = img.dataset.pid;
     if (!photoCache[id]) photoCache[id] = await idbGet('photos', id);
     if (photoCache[id]) img.src = photoCache[id];
+    else if (!fetchingPh.has(id) && !need.includes(id)) need.push(id);
   }
+  if (!need.length || !auth) return;
+  need.forEach(id => fetchingPh.add(id));
+  for (let i = 0; i < need.length; i += 8) {
+    try {
+      const r = await api('getPhotos', { ids: need.slice(i, i + 8) });
+      for (const [id, data] of Object.entries(r.photos)) {
+        photoCache[id] = data; await idbPut('photos', id, data);
+        document.querySelectorAll(`img[data-pid="${id}"]`).forEach(im => { im.src = data; });
+      }
+    } catch (e) { break; }
+  }
+  need.forEach(id => fetchingPh.delete(id));
 }
 // 壓縮照片：長邊 1280px、JPEG 品質 0.7
 function compress(file) {
@@ -229,17 +273,152 @@ function compress(file) {
   });
 }
 
+// ── 帳號與雲端 ─────────────────────────────
+let auth = null;
+try { auth = JSON.parse(localStorage.getItem('hinsp_auth') || 'null'); } catch (e) {}
+if (auth && auth.api !== API) auth = null;
+const isAdmin = () => !!(auth && auth.me.role === 'admin');
+const ROLE_NAME = { admin: '後台', inspector: '驗屋人員' };
+class ServerError extends Error {}
+async function api(action, data) {
+  if (!API) throw new ServerError('還沒設定後端網址');
+  let res;
+  try { res = await fetch(API, { method: 'POST', body: JSON.stringify(Object.assign({ action, token: auth && auth.token }, data || {})) }); }
+  catch (e) { throw new Error('連不上網路'); }
+  let j;
+  try { j = await res.json(); } catch (e) { throw new Error('伺服器忙碌，稍後再試'); }
+  if (j.auth) { logout(true); throw new ServerError(j.err || '請重新登入'); }
+  if (!j.ok && !j.conflict && !j.gone) throw new ServerError(j.err || '發生錯誤');
+  return j;
+}
+function setAuth(r) {
+  auth = { api: API, token: r.token, me: r.me };
+  localStorage.setItem('hinsp_auth', JSON.stringify(auth));
+}
+async function logout(expired) {
+  if (!expired && pendingCount() && !confirm(`還有 ${pendingCount()} 筆資料沒上傳，登出會丟掉。確定登出？`)) return;
+  auth = null; localStorage.removeItem('hinsp_auth');
+  state = { projects: [] }; outbox = { ph: [], p: {}, u: {}, del: [], dropU: {} };
+  await persistNow();
+  stack.length = 0; view = { name: 'login' }; closeSheet(); render(true);
+  if (expired) toast('登入已過期，請重新登入');
+}
+const pendingCount = () => outbox.ph.length + Object.keys(outbox.p).length + Object.keys(outbox.u).length + outbox.del.length;
+let syncing = false, pulling = false, pullAfter = false, syncErr = '', syncTimer, lastPull = 0;
+function setSyncUI() {
+  const el = document.getElementById('sync');
+  if (!auth) { el.textContent = ''; return; }
+  const n = pendingCount();
+  el.textContent = syncing ? '⏳ 上傳中' : n ? (syncErr ? `⚠️ ${n} 筆未上傳` : `⏳ ${n}`) : '☁️ 已同步';
+  el.title = syncErr || '';
+}
+function scheduleSync() { clearTimeout(syncTimer); syncTimer = setTimeout(sync, 1200); }
+function syncNow() { if (syncErr) toast(syncErr); sync(); }
+const projPayload = p => ({ id: p.id, name: p.name, addr: p.addr || '', layouts: p.layouts, created: p.created,
+  floors: p.floors.map(f => ({ id: f.id, name: f.name, units: f.units.map(u => ({ id: u.id, name: u.name, layout: u.layout })) })) });
+async function sync() {
+  if (!auth) return;
+  if (syncing) return;
+  if (pulling) { scheduleSync(); return; }
+  if (!pendingCount()) { syncErr = ''; setSyncUI(); return; }
+  syncing = true; setSyncUI();
+  let changed = false, again = false;
+  try {
+    // 1. 照片
+    // 伺服器拒絕的（不是網路問題）就略過，不要卡住後面的資料
+    const skipBad = async fn => { try { await fn(); } catch (e) { if (!(e instanceof ServerError)) throw e; toast(e.message); } };
+    while (outbox.ph.length) {
+      const id = outbox.ph[0], data = photoCache[id] || await idbGet('photos', id);
+      if (data && allPhotoIds().has(id)) await skipBad(() => api('uploadPhoto', { id, data }));
+      outbox.ph.shift(); await persistNow();
+    }
+    // 2. 刪除的建案
+    while (outbox.del.length) { await skipBad(() => api('deleteProject', { pid: outbox.del[0] })); outbox.del.shift(); await persistNow(); }
+    // 3. 建案結構
+    for (const pid of Object.keys(outbox.p)) {
+      const n = outbox.p[pid], p = state.projects.find(x => x.id === pid);
+      if (!p) { delete outbox.p[pid]; continue; }
+      let r;
+      const drop = Object.keys(outbox.dropU).filter(id => outbox.dropU[id] === pid);
+      try { r = await api('saveProject', { project: projPayload(p), baseV: p.v || 0, drop }); }
+      catch (e) { if (!(e instanceof ServerError)) throw e; toast(e.message); delete outbox.p[pid]; again = true; continue; }
+      if (r.conflict) { toast(r.err); delete outbox.p[pid]; again = true; continue; }
+      p.v = r.v;
+      drop.forEach(id => { delete outbox.dropU[id]; });
+      if (outbox.p[pid] === n) delete outbox.p[pid];
+      await persistNow();
+    }
+    // 4. 戶別驗屋紀錄
+    for (const id of Object.keys(outbox.u)) {
+      const o = outbox.u[id], p = state.projects.find(x => x.id === o.pid);
+      const f = p && p.floors.find(x => x.units.some(u => u.id === id)), u = f && f.units.find(x => x.id === id);
+      if (!u) { delete outbox.u[id]; continue; }
+      let r;
+      try { r = await api('saveUnit', { pid: p.id, uid: id, label: `${p.name} ${unitLabel(f, u)}`, insp: u.insp, baseV: u._v || 0 }); }
+      catch (e) { if (!(e instanceof ServerError)) throw e; toast(`${unitLabel(f, u)}：${e.message}`); delete outbox.u[id]; again = true; continue; }
+      if (r.conflict) { u.insp = r.insp; u._v = r.v; delete outbox.u[id]; toast(`${unitLabel(f, u)}：${r.err}`); changed = true; await persistNow(); continue; }
+      if (r.gone) { delete outbox.u[id]; again = true; continue; }
+      u._v = r.v;
+      if (outbox.u[id] && outbox.u[id].n === o.n) delete outbox.u[id];
+      await persistNow();
+    }
+    syncErr = '';
+  } catch (e) {
+    syncErr = e.message + '，有網路時會自動補傳';
+    syncTimer = setTimeout(sync, 20000);
+  } finally {
+    syncing = false; setSyncUI();
+  }
+  if (again || pullAfter) { pullAfter = false; await pull(true); }
+  else if (changed && !formView()) render();
+  if (pendingCount() && !syncErr) scheduleSync();
+}
+// 從雲端讀最新資料，本機還沒上傳的修改優先
+async function pull(quiet) {
+  if (!auth || pulling) return;
+  if (syncing) { pullAfter = true; return; } // 上傳中先不讀，免得拿到上傳前的舊資料
+  pulling = true;
+  let r;
+  try { r = await api('list'); }
+  catch (e) { if (!quiet) toast('讀取雲端資料失敗：' + e.message); return; }
+  finally { pulling = false; }
+  lastPull = Date.now();
+  const byU = {}; r.units.forEach(x => { byU[x.uid] = x; });
+  const local = state.projects;
+  const projects = r.projects.filter(sp => !outbox.del.includes(sp.id)).map(sp => {
+    const lp = local.find(p => p.id === sp.id);
+    const base = lp && outbox.p[sp.id] ? lp : sp;
+    const lunits = {}; if (lp) lp.floors.forEach(f => f.units.forEach(u => { lunits[u.id] = u; }));
+    base.floors.forEach(f => f.units.forEach(u => {
+      const lu = lunits[u.id];
+      if (lu && outbox.u[u.id]) { u.insp = lu.insp; u._v = lu._v; return; }
+      const s = byU[u.id];
+      u.insp = s ? s.insp : null; u._v = s ? s.v : 0; u._by = s ? s.by : ''; u._at = s ? s.at : '';
+    }));
+    return base;
+  });
+  local.forEach(lp => { if (outbox.p[lp.id] && !projects.some(p => p.id === lp.id)) projects.push(lp); });
+  projects.sort((a, b) => (b.created || 0) - (a.created || 0));
+  state.projects = projects;
+  persistNow();
+  if (!formView() && !document.getElementById('layer').innerHTML) render();
+  if (!quiet) toast('已更新成雲端最新資料');
+}
+// 正在填寫的畫面（背景更新時不重畫，免得打的字不見）
+const formView = () => ['trade', 'newProject', 'users', 'login'].includes(view.name) || (view.name === 'unit' && curU() && !curU().insp);
+const allPhotoIds = () => new Set(state.projects.flatMap(p => p.floors.flatMap(f => f.units.flatMap(unitPhotos))));
+
 // ── 資料結構 ─────────────────────────────
-// 建案 project { id, name, addr, layouts, floors:[floor] }
+// 建案 project { id, name, addr, layouts, floors:[floor], v }
 // 樓層 floor   { id, name, units:[unit] }
-// 戶別 unit    { id, name, layout:{beds,baths,balc,common}, insp:null | insp }
-// 驗屋 insp    { date, inspector, owner, phone, round, locs:[位置], checked:{工項:true}, defs:[缺失] }
-// 缺失 def     { id, k:工項, cat:大類, type:種類, subs:[小項目], loc:位置, note, photos, fixed }（sev 嚴重程度已停用，舊資料留著不顯示）
-// 只記缺失：沒記的就是合格。
+// 戶別 unit    { id, name, layout:{beds,baths,balc,common}, insp:null | insp, _v }
+// 驗屋 insp    { date, inspector, owner, phone, round, done:{階段:日期}, locs:[位置], checked:{工項:true}, defs:[缺失] }
+// 缺失 def     { id, r:建立的階段, k:工項, cat:大類, type:種類, subs:[小項目], loc:位置, note, photos, fixed }
+// 階段：1 交屋部初驗、2 屋主初驗、3 複驗、4 第 2 次複驗…；階段完成後，那一階段的缺失只有後台能改。
 const OTHER = { k: 'other', name: '其他', icon: '📌', cats: [] };
 const tradeOf = k => TRADES.find(t => t.k === k) || OTHER;
 const tradeOrder = (a, b) => { const i = k => { const n = TRADES.findIndex(t => t.k === k); return n < 0 ? 99 : n; }; return i(a) - i(b); };
-const newDef = (k, cat) => ({ id: uid(), k, cat, type: '', subs: [], loc: '', note: '', photos: [], fixed: false });
+const newDef = (k, cat, r) => ({ id: uid(), r, k, cat, type: '', subs: [], loc: '', note: '', photos: [], fixed: false });
 // 空白缺失（什麼都沒選）不算數
 const isEmptyDef = d => !d.type && !d.subs.length && !d.loc && !d.note && !d.photos.length;
 const realDefs = I => I.defs.filter(d => !isEmptyDef(d));
@@ -276,20 +455,24 @@ function stats(I) {
 }
 const unitPhotos = u => u.insp ? u.insp.defs.flatMap(d => d.photos) : [];
 const unitLabel = (f, u) => `${f.name}-${u.name}`;
-// 戶別狀態：未驗／驗屋中／有缺失／已改善／合格
-// 第 1 次＝初驗，第 2 次＝複驗，之後第 2 次複驗…
-const roundName = r => r <= 1 ? '初驗' : r === 2 ? '複驗' : `第 ${r - 1} 次複驗`;
+const roundName = r => r <= 1 ? '交屋部初驗' : r === 2 ? '屋主初驗' : r === 3 ? '複驗' : `第 ${r - 2} 次複驗`;
+const rShort = r => (r || 1) <= 1 ? '交屋部' : r === 2 ? '屋主' : '複驗';
+const rTag = d => `<span class="rtag r${Math.min(d.r || 1, 3)}">${rShort(d.r)}</span>`;
 const roundDone = I => (I.done || {})[I.round];
+// 鎖定：缺失建立的那個階段已完成 → 只有後台能改
+const locked = (I, d) => !!(I.done || {})[d.r || 1];
+const canEditDef = (I, d) => isAdmin() || !locked(I, d);
+const canWork = I => isAdmin() || !roundDone(I);
 // 這一輪還沒按「完成」→ 黃色驗屋中；按了完成 → 有待改善紅色、全部改好藍色、沒缺失綠色
 function unitStatus(u) {
   if (!u.insp) return { k: 'none', t: '未驗' };
-  const I = u.insp, s = stats(I), open = s.def - s.fixed, rn = roundName(I.round);
+  const I = u.insp, s = stats(I), open = s.def - s.fixed, rn = rShort(I.round) === '複驗' ? roundName(I.round) : rShort(I.round) + '驗';
   if (!roundDone(I)) return { k: 'doing', t: open ? `${rn}中 缺${open}` : `${rn}中`, s };
   if (open > 0) return { k: 'ng', t: `待改善 ${open}`, s };
   if (s.def) return { k: 'fixed', t: '已改善', s };
   return { k: 'ok', t: '合格', s };
 }
-// 舊版紀錄轉成新版（只記缺失）：舊缺失放在原工項（或「其他」）的「舊版紀錄」大類
+// v1 舊版紀錄轉成新版（只記缺失）：舊缺失放在原工項（或「其他」）的「舊版紀錄」大類
 function migrateUnit(u) {
   const old = u.insp; if (!old || old.defs) return;
   const locs = old.locs ? [...old.locs] : makeLocs(u.layout), defs = [];
@@ -301,10 +484,21 @@ function migrateUnit(u) {
   if (old.items) old.items.forEach(it => { if (it.s === 'ng') it.defs.forEach(d => add(it.k, it.t, d, d.loc)); });
   u.insp = { date: old.date, inspector: old.inspector, owner: old.owner, phone: old.phone, round: old.round || 1, common: !!u.layout.common, locs, checked: {}, defs };
 }
+// v8 以前（單機版）：初驗＝陪屋主驗 → 改成「屋主初驗」（第 2 階段），之後的複驗往後挪一格
+function migrateRounds(I) {
+  if (!I || I.v9) return;
+  const RN = { 主臥: '主臥室', 次臥: '次臥室' };
+  I.locs = [...new Set((I.locs || []).map(l => RN[l] || l))];
+  I.round = (I.round || 1) + 1;
+  const done = {}; Object.keys(I.done || {}).forEach(k => { done[Number(k) + 1] = I.done[k]; }); I.done = done;
+  I.defs.forEach(d => { d.r = 2; if (RN[d.loc]) d.loc = RN[d.loc]; });
+  I.v9 = true;
+}
 // 樓層名稱 → 數字（B1 = -1、RF／屋突 = 999、看不懂的 = 0）
 const floorNum = n => { if (/^(R|屋)/i.test(n)) return 999; const m = /^B(\d+)/i.exec(n); if (m) return -parseInt(m[1], 10); const k = parseInt(n, 10); return isNaN(k) ? 0 : k; };
 // 高樓層在上；B1、B2 在最下面
 const floorSort = (a, b) => floorNum(b.name) - floorNum(a.name);
+const defaultLayout = (p, n) => ({ ...(p.layouts[n] || { beds: 3, baths: 2, balc: 2, common: false }) });
 
 // ── 畫面切換 ─────────────────────────────
 let view = { name: 'home' };
@@ -331,18 +525,105 @@ function setHeader(title, back, right) {
 const VIEWS = {};
 function render(top) {
   const y = window.scrollY;
+  if (!auth) view = { name: 'login' };
   (VIEWS[view.name] || VIEWS.home)();
   hydratePhotos(app);
+  setSyncUI();
   window.scrollTo(0, top ? 0 : y);
 }
 // 找不到資料（被刪了）就回首頁
 function lost() { view = { name: 'home' }; stack.length = 0; VIEWS.home(); }
+function needAdmin() { if (isAdmin()) return true; toast('只有後台帳號能做這件事'); return false; }
+
+// ── 登入 ─────────────────────────────────
+VIEWS.login = () => {
+  setHeader('小棒槌 驗屋系統', false);
+  if (!API) { app.innerHTML = `<div class="card login empty">後端還沒設定好，請聯絡後台人員。</div>`; return; }
+  app.innerHTML = `<div class="card login" id="loginBox"><div class="empty">連線中…</div></div>`;
+  api('hasUsers').then(r => {
+    const box = document.getElementById('loginBox'); if (!box) return;
+    box.innerHTML = r.has
+      ? `<h2 style="margin:0 0 8px">登入</h2>
+        <label class="f">帳號</label><input type="text" id="l_user" autocomplete="username" autocapitalize="none">
+        <label class="f">密碼</label><input type="password" id="l_pass" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()">
+        <button class="btn accent block" onclick="doLogin()">登入</button>
+        <div class="muted" style="margin-top:10px">沒有帳號或忘記密碼，請找後台人員。</div>`
+      : `<h2 style="margin:0 0 8px">建立第一個後台帳號</h2>
+        <div class="muted">第一次使用，先建立後台（管理者）帳號，之後在「帳號管理」新增驗屋人員。</div>
+        <label class="f">姓名</label><input type="text" id="l_name">
+        <label class="f">帳號（英文或數字）</label><input type="text" id="l_user" autocapitalize="none">
+        <label class="f">密碼（至少 6 個字）</label><input type="password" id="l_pass" autocomplete="new-password">
+        <button class="btn accent block" onclick="doLogin(true)">建立並登入</button>`;
+  }).catch(e => { const box = document.getElementById('loginBox'); if (box) box.innerHTML = `<div class="empty">連不上伺服器：${esc(e.message)}<br><button class="btn ghost small" onclick="render()">重試</button></div>`; });
+};
+async function doLogin(first) {
+  const v = id => (document.getElementById(id) || {}).value || '';
+  try {
+    const r = await api(first ? 'setupFirst' : 'login', { user: v('l_user').trim(), pass: v('l_pass'), name: v('l_name').trim() });
+    setAuth(r);
+    state = (await idbGet('kv', CK)) || { projects: [] };
+    outbox = (await idbGet('kv', OK)) || outbox; outbox.dropU = outbox.dropU || {};
+    view = { name: 'home' }; stack.length = 0; render(true);
+    toast(`歡迎，${r.me.name}`);
+    await pull(true); sync();
+  } catch (e) { toast(e.message); }
+}
+function menu() {
+  sheet(`<b>👤 ${esc(auth.me.name)}（${ROLE_NAME[auth.me.role]}）</b>
+    <button class="btn ghost block" onclick="closeSheet();pull()">🔄 重新讀取雲端資料</button>
+    <button class="btn ghost block" onclick="closeSheet();go({name:'guide'})">📘 驗屋要領</button>
+    ${isAdmin() ? `<button class="btn ghost block" onclick="closeSheet();go({name:'users'})">👥 帳號管理</button>` : ''}
+    <button class="btn ghost block" onclick="passSheet()">🔑 改密碼</button>
+    <button class="btn ghost block" style="color:var(--accent)" onclick="logout()">登出</button>
+    <button class="btn block" onclick="closeSheet()">關閉</button>`);
+}
+function passSheet() {
+  sheet(`<b>改密碼</b>
+    <label class="f">舊密碼</label><input type="password" id="c_old" autocomplete="current-password">
+    <label class="f">新密碼（至少 6 個字）</label><input type="password" id="c_new" autocomplete="new-password">
+    <button class="btn accent block" onclick="changePass()">儲存</button><button class="btn ghost block" onclick="closeSheet()">取消</button>`);
+}
+async function changePass() {
+  try { const r = await api('changePass', { old: document.getElementById('c_old').value, pass: document.getElementById('c_new').value }); setAuth(r); closeSheet(); toast('密碼已更新'); }
+  catch (e) { toast(e.message); }
+}
+
+// ── 帳號管理（後台）──────────────────────────
+VIEWS.users = () => {
+  if (!isAdmin()) return lost();
+  setHeader('帳號管理', true);
+  app.innerHTML = `<button class="btn accent block" onclick="userSheet()">＋ 新增帳號</button><div style="height:12px"></div><div class="card" id="userList"><div class="empty">讀取中…</div></div>
+    <div class="card muted">後台：建案、樓層、戶別、屋型都能改，階段完成後的缺失也能修正。<br>驗屋人員：看得到全部建案，可驗屋、記缺失、完成階段；已完成階段的缺失不能改。</div>`;
+  api('listUsers').then(r => {
+    window._users = r.users;
+    const el = document.getElementById('userList'); if (!el) return;
+    el.innerHTML = r.users.map((u, i) => `<div class="user-row" onclick="userSheet(${i})"><div class="grow"><b>${esc(u.name)}</b> <span class="muted">${esc(u.user)}</span></div>
+      <span class="badge ${u.role === 'admin' ? 'fix' : ''}">${ROLE_NAME[u.role]}</span>${u.disabled ? '<span class="badge ng">停用</span>' : ''}</div>`).join('');
+  }).catch(e => toast(e.message));
+};
+function userSheet(i) {
+  const u = i == null ? null : window._users[i];
+  sheet(`<b>${u ? '修改帳號' : '新增帳號'}</b>
+    <label class="f">姓名</label><input type="text" id="u_name" value="${esc(u ? u.name : '')}">
+    <label class="f">帳號（英文或數字）</label><input type="text" id="u_user" value="${esc(u ? u.user : '')}" ${u ? 'disabled' : ''} autocapitalize="none">
+    <label class="f">角色</label><select id="u_role"><option value="inspector">驗屋人員</option><option value="admin" ${u && u.role === 'admin' ? 'selected' : ''}>後台</option></select>
+    <label class="f">${u ? '重設密碼（不改就空白）' : '初始密碼（至少 6 個字）'}</label><input type="password" id="u_pass" autocomplete="new-password">
+    ${u ? `<label class="row" style="margin-top:10px"><input type="checkbox" id="u_dis" ${u.disabled ? 'checked' : ''}> 停用這個帳號</label>` : ''}
+    <button class="btn accent block" onclick="saveUser(${u ? 'false' : 'true'})">儲存</button><button class="btn ghost block" onclick="closeSheet()">取消</button>`);
+}
+async function saveUser(isNew) {
+  const v = id => document.getElementById(id).value;
+  try {
+    await api('saveUser', { isNew, user: v('u_user').trim(), name: v('u_name').trim(), role: v('u_role'), pass: v('u_pass'), disabled: !isNew && document.getElementById('u_dis').checked });
+    closeSheet(); toast('已儲存'); render();
+  } catch (e) { toast(e.message); }
+}
 
 // ── 首頁：建案列表 ─────────────────────────
 VIEWS.home = () => {
-  setHeader('小棒槌 驗屋系統', false, ['📘 驗屋要領', () => go({ name: 'guide' })]);
-  let h = `<button class="btn accent block" onclick="go({name:'newProject'})">＋ 新增建案</button><div style="height:12px"></div>`;
-  if (!state.projects.length) h += `<div class="card empty">還沒有建案<br>按上面「新增建案」，輸入樓層與戶別就會自動排好</div>`;
+  setHeader('小棒槌 驗屋系統', false, ['☰ ' + auth.me.name, menu]);
+  let h = isAdmin() ? `<button class="btn accent block" onclick="go({name:'newProject'})">＋ 新增建案</button><div style="height:12px"></div>` : '';
+  if (!state.projects.length) h += `<div class="card empty">還沒有建案<br>${isAdmin() ? '按上面「新增建案」，輸入樓層與戶別就會自動排好' : '請後台人員先建立建案'}</div>`;
   state.projects.forEach(p => {
     const units = p.floors.flatMap(f => f.units);
     const cnt = { none: 0, doing: 0, ng: 0, ok: 0, fixed: 0 };
@@ -356,15 +637,41 @@ VIEWS.home = () => {
         <div class="bar"><i style="width:${units.length ? done / units.length * 100 : 0}%"></i></div>
       </div></div>`;
   });
-  h += `<div class="card noprint"><b>資料備份</b><div class="muted">資料只存在這支手機（平板），換機或清除瀏覽器資料前請先匯出備份（含照片）。</div>
-    <div class="row" style="margin-top:8px"><button class="btn ghost small" onclick="exportAll()">匯出備份</button>
-    <label class="btn ghost small">匯入備份<input type="file" accept=".json,application/json" style="display:none" onchange="importAll(this)"></label></div></div>
-    <div class="ver">版本 ${VERSION}</div>`;
+  h += `<div id="oldData"></div><div class="ver">版本 ${VERSION}　${esc(auth.me.name)}（${ROLE_NAME[auth.me.role]}）</div>`;
   app.innerHTML = h;
+  if (isAdmin()) showOldData();
 };
+// 單機版（v8 以前）存在這支手機的資料 → 後台可上傳到雲端
+async function showOldData() {
+  const old = await idbGet('kv', 'state'), flag = await idbGet('kv', 'oldUploaded:' + API);
+  const ps = old && Array.isArray(old.projects) ? old.projects.filter(p => !state.projects.some(x => x.id === p.id)) : [];
+  const el = document.getElementById('oldData');
+  if (!el || flag || !ps.length) return;
+  el.innerHTML = `<div class="card"><b>📦 這支手機有舊版（單機版）的資料</b>
+    <div class="muted">${ps.map(p => esc(p.name)).join('、')}。上傳後大家都看得到；原本的「初驗」會變成「屋主初驗」。</div>
+    <div class="row" style="margin-top:8px"><button class="btn accent small" onclick="uploadOld()">上傳到雲端</button>
+    <button class="btn ghost small" onclick="idbPut('kv','oldUploaded:'+API,true).then(()=>render())">不用，隱藏</button></div></div>`;
+}
+async function uploadOld() {
+  if (!needAdmin()) return;
+  const old = await idbGet('kv', 'state');
+  const ps = old.projects.filter(p => !state.projects.some(x => x.id === p.id));
+  if (!confirm(`上傳 ${ps.length} 個建案（含照片）到雲端？`)) return;
+  for (const p0 of ps) {
+    const p = clone(p0); p.v = 0; p.created = p.created || Date.now();
+    p.floors.forEach(f => f.units.forEach(u => {
+      migrateUnit(u); migrateRounds(u.insp); u._v = 0;
+      if (u.insp) { outbox.u[u.id] = { pid: p.id, n: ++seq }; unitPhotos(u).forEach(ph => outbox.ph.push(ph)); }
+    }));
+    state.projects.push(p); outbox.p[p.id] = ++seq;
+  }
+  await idbPut('kv', 'oldUploaded:' + API, true);
+  persist(); render(); toast('開始上傳，右上角會顯示進度');
+}
 
-// ── 新增建案 ─────────────────────────────
+// ── 新增建案（後台）─────────────────────────────
 VIEWS.newProject = () => {
+  if (!isAdmin()) return lost();
   setHeader('新增建案', true);
   app.innerHTML = `<div class="card">
     <label class="f">建案名稱 *</label><input type="text" id="p_name" placeholder="例：小棒槌一期">
@@ -373,7 +680,7 @@ VIEWS.newProject = () => {
     <div id="p_segs">${segRow(2, 12, 'A,B,C')}</div>
     <button class="btn ghost small" onclick="addSeg()">＋ 加一段（某層以上戶數不同，例如退縮）</button>
     <div class="muted" style="margin-top:4px">例：2～10F 是 A,B,C,D；11～14F 只剩 A,B，就分兩段。一樓店面、地下室之後可在建案頁自己加。</div>
-    <label class="f">各戶別格局（會自動產生對應的檢查表，個別戶驗屋時還能改）</label>
+    <label class="f">各戶別屋型（會自動產生對應的位置，之後也能在戶別裡調整）</label>
     <div id="p_layouts"></div>
     <label class="row" style="margin-top:10px"><input type="checkbox" id="p_common"> 每戶都檢查公設與停車位</label>
     <button class="btn accent block" onclick="createProject()">建立建案</button>
@@ -406,6 +713,7 @@ function drawLayouts() {
   }).join('');
 }
 function createProject() {
+  if (!needAdmin()) return;
   const v = id => document.getElementById(id).value.trim();
   if (!v('p_name')) { toast('請填建案名稱'); return; }
   const segs = readSegs();
@@ -426,9 +734,9 @@ function createProject() {
     layouts[r.dataset.u] = { beds: num(n[0], 0, 8), baths: num(n[1], 0, 6), balc: num(n[2], 0, 5), common: document.getElementById('p_common').checked };
   });
   const floors = [...byFloor.keys()].sort((a, b) => b - a).map(k => ({ id: uid(), name: k > 0 ? k + 'F' : 'B' + (-k),
-    units: byFloor.get(k).map(n => ({ id: uid(), name: n, layout: { ...layouts[n] }, insp: null })) }));
-  const p = { id: uid(), name: v('p_name'), addr: v('p_addr'), layouts, floors, created: Date.now() };
-  state.projects.unshift(p); save();
+    units: byFloor.get(k).map(n => ({ id: uid(), name: n, layout: { ...layouts[n] }, insp: null, _v: 0 })) }));
+  const p = { id: uid(), name: v('p_name'), addr: v('p_addr'), layouts, floors, created: Date.now(), v: 0 };
+  state.projects.unshift(p); saveP(p);
   stack.pop(); view = { name: 'project', pid: p.id }; history.replaceState({ d: stack.length }, ''); stack.push({ name: 'home' }); render(true);
 }
 
@@ -442,22 +750,53 @@ VIEWS.project = () => {
   let h = `<div class="card"><div class="stat stat5">
       <div><b>${units.length}</b>總戶</div><div><b style="color:var(--ok)">${cnt.ok + cnt.fixed}</b>完成</div>
       <div><b style="color:var(--accent)">${cnt.ng}</b>缺失</div><div><b style="color:#e67700">${cnt.doing}</b>驗中</div><div><b>${cnt.none}</b>未驗</div></div>
-    <div class="muted" style="margin-top:8px;font-size:13px">點戶別進去驗屋；點樓層名稱可新增／刪除戶別。</div><div class="legend"><span class="u-none">未驗</span><span class="u-doing">驗屋中</span><span class="u-ng">待改善</span><span class="u-fixed">已改善</span><span class="u-ok">合格</span></div></div>`;
+    <div class="muted" style="margin-top:8px;font-size:13px">點戶別進去驗屋${isAdmin() ? '；點樓層名稱可新增／刪除戶別' : ''}。</div><div class="legend"><span class="u-none">未驗</span><span class="u-doing">驗屋中</span><span class="u-ng">待改善</span><span class="u-fixed">已改善</span><span class="u-ok">合格</span></div></div>`;
   [...p.floors].sort(floorSort).forEach(f => {
-    h += `<div class="card floor"><button class="fn" onclick="floorMenu('${f.id}')" title="樓層設定">${esc(f.name)}<br><small style="font-weight:normal;color:var(--muted)">⋯</small></button><div class="units">`;
+    h += `<div class="card floor"><button class="fn" ${isAdmin() ? `onclick="floorMenu('${f.id}')" title="樓層設定"` : ''}>${esc(f.name)}${isAdmin() ? '<br><small style="font-weight:normal;color:var(--muted)">⋯</small>' : ''}</button><div class="units">`;
     f.units.forEach(u => {
       const st = unitStatus(u);
       h += `<button class="unit u-${st.k}" onclick="go({name:'unit',pid:'${p.id}',fid:'${f.id}',uid:'${u.id}'})"><b>${esc(u.name)}</b><small>${st.t}</small></button>`;
     });
     h += `</div></div>`;
   });
-  h += `<div class="card noprint">
+  if (isAdmin()) h += `<div class="card noprint">
     <button class="btn ghost block" onclick="addFloor()">＋ 新增樓層（1F、B1…）</button>
     <button class="btn ghost block" onclick="batchSheet()">🏗 調整某幾層的戶別（退縮、合併戶）</button>
+    <button class="btn ghost block" onclick="layoutSheet()">🏠 調整屋型（幾房幾衛幾陽台）</button>
     <button class="btn ghost block" onclick="editProject()">✏️ 修改建案資料</button>
     <button class="btn ghost block" style="color:var(--accent)" onclick="delProject()">🗑 刪除這個建案</button></div>`;
   app.innerHTML = h;
 };
+// 依戶別（A、B…）一次調整整棟的屋型；已開始驗屋的戶，位置清單也一起更新（已記的位置會保留）
+function layoutSheet() {
+  const p = curP(), names = [...new Set(p.floors.flatMap(f => f.units.map(u => u.name)))].sort();
+  sheet(`<b>調整屋型</b><div class="muted">依戶別一次改整棟（例：所有 A 戶）。個別某一戶不同，可進那一戶再改。</div>
+    <div id="lay_box" style="margin-top:8px">${names.map(n => { const L = p.layouts[n] || defaultLayout(p, n);
+      return `<div class="row lay" data-u="${esc(n)}"><b style="width:44px">${esc(n)} 戶</b>
+        <input type="number" value="${L.beds}" min="0" max="8"> 房 <input type="number" value="${L.baths}" min="0" max="6"> 衛 <input type="number" value="${L.balc}" min="0" max="5"> 陽台</div>`; }).join('')}</div>
+    <button class="btn accent block" onclick="applyLayouts()">套用</button><button class="btn ghost block" onclick="closeSheet()">取消</button>`);
+}
+function applyLayouts() {
+  if (!needAdmin()) return;
+  const p = curP();
+  document.querySelectorAll('#lay_box [data-u]').forEach(r => {
+    const n = [...r.querySelectorAll('input')].map(i => i.value), name = r.dataset.u;
+    const L = { beds: num(n[0], 0, 8), baths: num(n[1], 0, 6), balc: num(n[2], 0, 5), common: !!(p.layouts[name] || {}).common };
+    p.layouts[name] = L;
+    p.floors.forEach(f => f.units.forEach(u => { if (u.name === name) setUnitLayout(p, u, { ...L, common: u.layout.common }); }));
+  });
+  saveP(p); closeSheet(); render(); toast('屋型已更新');
+}
+// 換屋型：位置清單重排，已經記過缺失的位置保留
+function setUnitLayout(p, u, L) {
+  const same = JSON.stringify(u.layout) === JSON.stringify(L);
+  u.layout = L;
+  if (!u.insp || same) return;
+  const used = u.insp.defs.map(d => d.loc).filter(Boolean), locs = makeLocs(L);
+  used.forEach(l => { if (!locs.includes(l)) locs.push(l); });
+  u.insp.locs = locs; u.insp.common = !!L.common;
+  saveU(u, p);
+}
 function batchSheet() {
   sheet(`<b>調整某幾層的戶別</b>
     <div class="muted">例：11～14F 只剩 A,B → 這幾層會變成只有 A、B 兩戶（缺的戶自動補上，多的戶刪掉）。</div>
@@ -466,6 +805,7 @@ function batchSheet() {
     <button class="btn accent block" onclick="batchApply()">套用</button><button class="btn ghost block" onclick="closeSheet()">取消</button>`);
 }
 async function batchApply() {
+  if (!needAdmin()) return;
   const p = curP(), from = parseInt(document.getElementById('b_from').value, 10), to = parseInt(document.getElementById('b_to').value, 10);
   const names = parseUnits(document.getElementById('b_units').value);
   if (isNaN(from) || isNaN(to) || to < from) { toast('樓層範圍不對'); return; }
@@ -480,20 +820,22 @@ async function batchApply() {
   if (!confirm(msg + '\n\n確定套用？')) return;
   for (const f of floors) {
     const old = f.units;
-    f.units = names.map(n => old.find(u => u.name === n) || { id: uid(), name: n, layout: { ...(p.layouts[n] || { beds: 3, baths: 2, balc: 2, common: false }) }, insp: null })
+    f.units = names.map(n => old.find(u => u.name === n) || { id: uid(), name: n, layout: defaultLayout(p, n), insp: null, _v: 0 })
       .concat(old.filter(u => !names.includes(u.name) && u.insp));
   }
-  save(); closeSheet(); render(); toast('已調整');
+  saveP(p); closeSheet(); render(); toast('已調整');
 }
 function addFloor() {
+  if (!needAdmin()) return;
   const p = curP();
   const n = prompt('樓層名稱（例：1F、B1、RF）'); if (!n || !n.trim()) return;
   if (p.floors.some(f => f.name === n.trim())) { toast('已經有這個樓層'); return; }
   const us = prompt('這層的戶別（逗號分開）', Object.keys(p.layouts).join(',')); if (us === null) return;
-  const units = parseUnits(us).map(x => ({ id: uid(), name: x, layout: { ...(p.layouts[x] || { beds: 3, baths: 2, balc: 2, common: false }) }, insp: null }));
-  p.floors.push({ id: uid(), name: n.trim(), units }); save(); render();
+  const units = parseUnits(us).map(x => ({ id: uid(), name: x, layout: defaultLayout(p, x), insp: null, _v: 0 }));
+  p.floors.push({ id: uid(), name: n.trim(), units }); saveP(p); render();
 }
 function floorMenu(fid) {
+  if (!isAdmin()) return;
   const f = curP().floors.find(x => x.id === fid);
   sheet(`<b>${esc(f.name)}</b>
     <button class="btn ghost block" onclick="addUnit('${fid}')">＋ 新增戶別</button>
@@ -503,31 +845,35 @@ function floorMenu(fid) {
     <button class="btn block" onclick="closeSheet()">取消</button>`);
 }
 function addUnit(fid) {
+  if (!needAdmin()) return;
   const p = curP(), f = p.floors.find(x => x.id === fid);
   const n = prompt('戶別名稱（例：D）'); if (!n || !n.trim()) return;
   if (f.units.some(u => u.name === n.trim())) { toast('這層已經有這一戶'); return; }
-  f.units.push({ id: uid(), name: n.trim(), layout: { ...(p.layouts[n.trim()] || { beds: 3, baths: 2, balc: 2, common: false }) }, insp: null });
-  save(); closeSheet(); render();
+  f.units.push({ id: uid(), name: n.trim(), layout: defaultLayout(p, n.trim()), insp: null, _v: 0 });
+  saveP(p); closeSheet(); render();
 }
 function renameFloor(fid) {
+  if (!needAdmin()) return;
   const f = curP().floors.find(x => x.id === fid);
-  const n = prompt('樓層名稱', f.name); if (n && n.trim()) { f.name = n.trim(); save(); } closeSheet(); render();
+  const n = prompt('樓層名稱', f.name); if (n && n.trim()) { f.name = n.trim(); saveP(); } closeSheet(); render();
 }
-async function delPhotosOf(units) { for (const u of units) for (const ph of unitPhotos(u)) await photoDel(ph); }
+async function delPhotosOf(units, pid) { for (const u of units) { delete outbox.u[u.id]; if (pid) outbox.dropU[u.id] = pid; for (const ph of unitPhotos(u)) await photoDel(ph); } }
 function delUnitSheet(fid) {
   const f = curP().floors.find(x => x.id === fid);
   sheet(`<b>刪除 ${esc(f.name)} 的哪一戶？</b>${f.units.map(u => `<button class="btn ghost block" onclick="delUnit('${fid}','${u.id}')">${esc(u.name)}（${unitStatus(u).t}）</button>`).join('')}
     <button class="btn block" onclick="closeSheet()">取消</button>`);
 }
 async function delUnit(fid, id) {
-  const f = curP().floors.find(x => x.id === fid), u = f.units.find(x => x.id === id);
+  if (!needAdmin()) return;
+  const p = curP(), f = p.floors.find(x => x.id === fid), u = f.units.find(x => x.id === id);
   if (!confirm(`刪除 ${unitLabel(f, u)} 和它所有的驗屋紀錄、照片？`)) return;
-  await delPhotosOf([u]); f.units = f.units.filter(x => x !== u); save(); closeSheet(); render();
+  await delPhotosOf([u], p.id); f.units = f.units.filter(x => x !== u); saveP(p); closeSheet(); render();
 }
 async function delFloor(fid) {
+  if (!needAdmin()) return;
   const p = curP(), f = p.floors.find(x => x.id === fid);
   if (!confirm(`刪除整個 ${f.name}（${f.units.length} 戶）和所有驗屋紀錄、照片？`)) return;
-  await delPhotosOf(f.units); p.floors = p.floors.filter(x => x !== f); save(); closeSheet(); render();
+  await delPhotosOf(f.units, p.id); p.floors = p.floors.filter(x => x !== f); saveP(p); closeSheet(); render();
 }
 function editProject() {
   const p = curP();
@@ -537,15 +883,19 @@ function editProject() {
     <button class="btn accent block" onclick="saveProject()">儲存</button><button class="btn ghost block" onclick="closeSheet()">取消</button>`);
 }
 function saveProject() {
+  if (!needAdmin()) return;
   const p = curP(), v = id => document.getElementById(id).value.trim();
-  p.name = v('e_name') || p.name; p.addr = v('e_addr'); save(); closeSheet(); render();
+  p.name = v('e_name') || p.name; p.addr = v('e_addr'); saveP(p); closeSheet(); render();
 }
 async function delProject() {
+  if (!needAdmin()) return;
   const p = curP();
-  if (!confirm(`刪除建案「${p.name}」？所有樓層、戶別的驗屋紀錄和照片都會刪掉，無法復原。\n（建議先回首頁匯出備份）`)) return;
+  if (!confirm(`刪除建案「${p.name}」？所有樓層、戶別的驗屋紀錄都會刪掉（照片會移到雲端硬碟垃圾桶，30 天內可救回）。`)) return;
   if (prompt('確定要刪除請輸入建案名稱') !== p.name) { toast('名稱不符，沒有刪除'); return; }
   await delPhotosOf(p.floors.flatMap(f => f.units));
-  state.projects = state.projects.filter(x => x !== p); save(); lost();
+  delete outbox.p[p.id];
+  if (p.v) outbox.del.push(p.id);
+  state.projects = state.projects.filter(x => x !== p); persist(); lost();
 }
 
 // ── 戶別：工項列表 ─────────────────────────
@@ -554,35 +904,40 @@ VIEWS.unit = () => {
   const label = unitLabel(f, u);
   if (!u.insp) {
     setHeader(`${label} 戶`, true);
-    const L = u.layout;
+    const L = u.layout, dis = isAdmin() ? '' : 'disabled';
     app.innerHTML = `<div class="card"><b>${esc(p.name)}　${esc(label)}</b><div class="muted">這一戶還沒驗屋</div>
+      <label class="f">驗屋階段</label>
+      <div class="stage"><label><input type="radio" name="i_round" value="1" checked>交屋部初驗</label><label><input type="radio" name="i_round" value="2">屋主初驗</label></div>
+      <div class="muted" style="font-size:13px;margin-top:4px">交屋部先自己驗一輪 → 屋主初驗 → 複驗。沒有交屋部初驗的戶，直接選「屋主初驗」。</div>
       <label class="f">住戶姓名</label><input type="text" id="i_owner">
       <label class="f">住戶電話</label><input type="text" id="i_phone" inputmode="tel">
       <div class="row"><div class="grow"><label class="f">驗屋日期</label><input type="date" id="i_date" value="${today()}"></div>
-      <div class="grow"><label class="f">陪驗人員</label><input type="text" id="i_insp" value="${esc(state.lastInspector || '')}"></div></div>
-      <label class="f">格局</label>
+      <div class="grow"><label class="f">驗屋人員</label><input type="text" id="i_insp" value="${esc(auth.me.name)}"></div></div>
+      <label class="f">屋型${isAdmin() ? '' : '（只有後台能改）'}</label>
       <div class="grid3">
-        <div><div class="muted">房間數</div><input type="number" id="i_beds" value="${L.beds}" min="0" max="8" oninput="previewLocs()"></div>
-        <div><div class="muted">衛浴數</div><input type="number" id="i_baths" value="${L.baths}" min="0" max="6" oninput="previewLocs()"></div>
-        <div><div class="muted">陽台數</div><input type="number" id="i_balc" value="${L.balc}" min="0" max="5" oninput="previewLocs()"></div>
+        <div><div class="muted">房間數</div><input type="number" id="i_beds" value="${L.beds}" min="0" max="8" oninput="previewLocs()" ${dis}></div>
+        <div><div class="muted">衛浴數</div><input type="number" id="i_baths" value="${L.baths}" min="0" max="6" oninput="previewLocs()" ${dis}></div>
+        <div><div class="muted">陽台數</div><input type="number" id="i_balc" value="${L.balc}" min="0" max="5" oninput="previewLocs()" ${dis}></div>
       </div>
       <div class="muted" id="i_locs" style="margin-top:6px"></div>
-      <label class="row" style="margin-top:10px"><input type="checkbox" id="i_common" ${L.common ? 'checked' : ''}> 包含公設與停車位檢查</label>
+      <label class="row" style="margin-top:10px"><input type="checkbox" id="i_common" ${L.common ? 'checked' : ''} ${dis}> 包含公設與停車位檢查</label>
       <button class="btn accent block" onclick="startInsp()">開始驗屋</button></div>`;
     previewLocs();
     return;
   }
   const I = u.insp;
-  if (I.defs.some(isEmptyDef)) { I.defs = I.defs.filter(d => !isEmptyDef(d)); save(); } // 離開工項時，什麼都沒選的空白缺失自動丟掉
+  if (I.defs.some(isEmptyDef)) { I.defs = I.defs.filter(d => !isEmptyDef(d)); saveU(u, p); } // 離開工項時，什麼都沒選的空白缺失自動丟掉
   openDefs.clear();
   setHeader(`${label} 戶`, true, ['📋 報告', () => go({ ...view, name: 'report' })]);
-  const s = stats(I);
+  const s = stats(I), done = roundDone(I);
   let h = `<div class="card"><div class="stat">
       <div><b>${s.checked}/${s.trades}</b>工項完成</div><div><b style="color:var(--accent)">${s.def - s.fixed}</b>待改善</div>
       <div><b style="color:#1971c2">${s.fixed}</b>已改善</div><div><b>${s.def}</b>缺失合計</div></div>
       <div class="muted" style="margin-top:8px">${esc(p.name)} ${esc(label)}　住戶：${esc(I.owner || '—')} ${esc(I.phone || '')}<br>
-      ${esc(I.date || '')}　陪驗：${esc(I.inspector || '—')}　<b>${roundName(I.round)}${roundDone(I) ? '（已完成）' : '（進行中）'}</b></div>
-      <div class="muted" style="margin-top:6px">📍 位置：${I.locs.map(esc).join('、')} <a href="javascript:editLocs()">修改</a></div></div>`;
+      ${esc(I.date || '')}　驗屋：${esc(I.inspector || '—')}　<b>${roundName(I.round)}${done ? '（已完成）' : '（進行中）'}</b></div>
+      <div class="muted" style="margin-top:6px">📍 位置：${I.locs.map(esc).join('、')} ${isAdmin() ? '<a href="javascript:editLocs()">修改</a>' : ''}</div>
+      ${u._by ? `<div class="muted" style="font-size:12px;margin-top:4px">最後更新：${esc(u._by)} ${esc(u._at)}</div>` : ''}</div>`;
+  if (done && !isAdmin()) h += `<div class="lockbar">🔒 ${roundName(I.round)}已完成，缺失已鎖定，要修改請找後台。</div>`;
   unitTrades(I).forEach(k => {
     const tr = tradeOf(k), ds = realDefs(I).filter(d => d.k === k), fixed = ds.filter(d => d.fixed).length, open = ds.length - fixed;
     h += `<div class="card list-item" onclick="go({...view,name:'trade',tk:'${k}'})">
@@ -593,12 +948,13 @@ VIEWS.unit = () => {
       <div class="chk ${I.checked[k] ? 'on' : ''}">✔</div></div>`;
   });
   h += `<div class="card noprint">
-    <button class="btn ghost block" onclick="editInsp()">✏️ 修改住戶／驗屋資料</button>
-    ${roundDone(I)
-      ? `<button class="btn ghost block" onclick="undoFinish()">✔ ${roundName(I.round)}已完成（${esc(roundDone(I))}）・點這裡取消</button>
+    ${canWork(I) ? `<button class="btn ghost block" onclick="editInsp()">✏️ 修改住戶／驗屋資料</button>` : ''}
+    ${isAdmin() ? `<button class="btn ghost block" onclick="unitLayoutSheet()">🏠 調整這一戶的屋型</button>` : ''}
+    ${done
+      ? `${isAdmin() ? `<button class="btn ghost block" onclick="undoFinish()">✔ ${roundName(I.round)}已完成（${esc(done)}）・點這裡取消</button>` : ''}
          <button class="btn accent block" onclick="startRecheck()">🔁 開始${roundName(I.round + 1)}</button>`
       : `<button class="btn accent block" onclick="finishRound()">✔ 完成${roundName(I.round)}</button>`}
-    <button class="btn ghost block" style="color:var(--accent)" onclick="clearInsp()">🗑 清除這戶的驗屋紀錄</button></div>`;
+    ${isAdmin() ? `<button class="btn ghost block" style="color:var(--accent)" onclick="clearInsp()">🗑 清除這戶的驗屋紀錄</button>` : ''}</div>`;
   app.innerHTML = h;
 };
 function layoutFromForm() {
@@ -607,19 +963,38 @@ function layoutFromForm() {
 }
 function previewLocs() { document.getElementById('i_locs').textContent = '位置：' + makeLocs(layoutFromForm()).join('、'); }
 function startInsp() {
-  const u = curU(), v = id => document.getElementById(id).value.trim();
-  u.layout = layoutFromForm();
-  u.insp = { date: v('i_date'), inspector: v('i_insp'), owner: v('i_owner'), phone: v('i_phone'), round: 1, common: u.layout.common, locs: makeLocs(u.layout), checked: {}, defs: [] };
-  if (v('i_insp')) state.lastInspector = v('i_insp');
-  save(); render(true);
+  const p = curP(), u = curU(), v = id => document.getElementById(id).value.trim();
+  const round = Number(document.querySelector('input[name=i_round]:checked').value);
+  if (isAdmin()) { const L = layoutFromForm(); if (JSON.stringify(L) !== JSON.stringify(u.layout)) { u.layout = L; saveP(p); } }
+  u.insp = { date: v('i_date'), inspector: v('i_insp'), owner: v('i_owner'), phone: v('i_phone'), round, common: !!u.layout.common, locs: makeLocs(u.layout), checked: {}, defs: [], v9: true };
+  saveU(u, p); render(true);
+}
+function unitLayoutSheet() {
+  const u = curU(), L = u.layout;
+  sheet(`<b>調整這一戶的屋型</b>
+    <div class="grid3" style="margin-top:8px">
+      <div><div class="muted">房間數</div><input type="number" id="i_beds" value="${L.beds}" min="0" max="8" oninput="previewLocs()"></div>
+      <div><div class="muted">衛浴數</div><input type="number" id="i_baths" value="${L.baths}" min="0" max="6" oninput="previewLocs()"></div>
+      <div><div class="muted">陽台數</div><input type="number" id="i_balc" value="${L.balc}" min="0" max="5" oninput="previewLocs()"></div></div>
+    <div class="muted" id="i_locs" style="margin-top:6px"></div>
+    <label class="row" style="margin-top:10px"><input type="checkbox" id="i_common" ${L.common ? 'checked' : ''}> 包含公設與停車位檢查</label>
+    <div class="muted" style="font-size:13px">已經記過缺失的位置會保留。</div>
+    <button class="btn accent block" onclick="applyUnitLayout()">套用</button><button class="btn ghost block" onclick="closeSheet()">取消</button>`);
+  previewLocs();
+}
+function applyUnitLayout() {
+  if (!needAdmin()) return;
+  const p = curP(), L = layoutFromForm();
+  setUnitLayout(p, curU(), L); saveP(p); closeSheet(); render();
 }
 function editLocs() {
+  if (!needAdmin()) return;
   const I = curU().insp;
   const n = prompt('這一戶的位置（用頓號或逗號分開，可加書房、儲藏室…）', I.locs.join('、'));
   if (n === null) return;
   const locs = parseUnits(n);
   if (!locs.length) { toast('至少要有一個位置'); return; }
-  I.locs = locs; save(); render();
+  I.locs = locs; saveU(); render();
 }
 function editInsp() {
   const I = curU().insp;
@@ -627,42 +1002,46 @@ function editInsp() {
     <label class="f">住戶姓名</label><input type="text" id="e_owner" value="${esc(I.owner)}">
     <label class="f">住戶電話</label><input type="text" id="e_phone" value="${esc(I.phone)}">
     <label class="f">驗屋日期</label><input type="date" id="e_date" value="${esc(I.date)}">
-    <label class="f">陪驗人員</label><input type="text" id="e_insp" value="${esc(I.inspector)}">
-    <label class="row" style="margin-top:10px"><input type="checkbox" id="e_common" ${I.common ? 'checked' : ''}> 包含公設與停車位檢查</label>
+    <label class="f">驗屋人員</label><input type="text" id="e_insp" value="${esc(I.inspector)}">
     <button class="btn accent block" onclick="saveInsp()">儲存</button><button class="btn ghost block" onclick="closeSheet()">取消</button>`);
 }
 function saveInsp() {
   const I = curU().insp, v = id => document.getElementById(id).value.trim();
-  I.owner = v('e_owner'); I.phone = v('e_phone'); I.date = v('e_date'); I.inspector = v('e_insp'); I.common = document.getElementById('e_common').checked;
-  save(); closeSheet(); render();
+  if (!canWork(I)) { toast('這個階段已完成，只有後台能改'); return; }
+  I.owner = v('e_owner'); I.phone = v('e_phone'); I.date = v('e_date'); I.inspector = v('e_insp');
+  saveU(); closeSheet(); render();
 }
 function finishRound() {
   const I = curU().insp, s = stats(I), rn = roundName(I.round), open = s.def - s.fixed;
   const left = s.trades - s.checked;
   if (!confirm(`確定完成${rn}？
-
+${isAdmin() ? '' : '完成後這一階段的缺失就鎖定，只有後台能修改。\n'}
 ${left ? `還有 ${left} 個工項沒按「檢查完成」，沒記缺失的都會算合格。
 ` : ''}待改善缺失：${open} 處`)) return;
   unitTrades(I).forEach(k => { I.checked[k] = true; });
-  I.done = I.done || {}; I.done[I.round] = today(); save();
-  toast(open ? `${rn}完成，待改善 ${open} 處。改善好後按「開始${roundName(I.round + 1)}」` : `${rn}完成，全部合格 👍`);
+  I.defs = I.defs.filter(d => !isEmptyDef(d));
+  I.done = I.done || {}; I.done[I.round] = today(); saveU();
+  toast(open ? `${rn}完成，待改善 ${open} 處。下一步按「開始${roundName(I.round + 1)}」` : `${rn}完成，全部合格 👍`);
   render();
 }
 function undoFinish() {
+  if (!needAdmin()) return;
   const I = curU().insp;
   if (!confirm(`取消「${roundName(I.round)}已完成」，回到進行中？`)) return;
-  delete I.done[I.round]; save(); render();
+  delete I.done[I.round]; saveU(); render();
 }
 function startRecheck() {
-  const I = curU().insp;
-  if (!confirm(`開始${roundName(I.round + 1)}？\n\n缺失會保留，到現場逐處確認後按「已改善」，看完按「完成${roundName(I.round + 1)}」。驗屋日期會改成今天。`)) return;
-  I.round++; I.date = today(); I.checked = {}; save();
-  toast('已進入複驗，到各工項逐處確認'); render();
+  const I = curU().insp, next = roundName(I.round + 1);
+  if (!confirm(`開始${next}？\n\n之前的缺失會保留，到現場逐處確認改好的按「已改善」${I.round === 1 ? '，屋主新提的缺失直接新增' : ''}，看完按「完成${next}」。驗屋日期會改成今天。`)) return;
+  I.round++; I.date = today(); I.checked = {}; I.inspector = auth.me.name; saveU();
+  toast(`已進入${next}`); render();
 }
 async function clearInsp() {
+  if (!needAdmin()) return;
   const f = curF(), u = curU();
-  if (!confirm(`清除 ${unitLabel(f, u)} 的驗屋紀錄和照片，回到「未驗」？無法復原。`)) return;
-  await delPhotosOf([u]); u.insp = null; save(); render(true);
+  if (!confirm(`清除 ${unitLabel(f, u)} 的驗屋紀錄，回到「未驗」？（照片會移到雲端硬碟垃圾桶）`)) return;
+  for (const ph of unitPhotos(u)) await photoDel(ph);
+  u.insp = null; saveU(u); render(true);
 }
 
 // ── 工項：大類（可展開／收起）→ 缺失 ─────────────
@@ -676,7 +1055,9 @@ VIEWS.trade = () => {
   const mine = I.defs.filter(d => d.k === view.tk);
   const cats = [...tr.cats];
   mine.forEach(d => { if (!cats.some(x => x.n === d.cat)) cats.push({ n: d.cat, h: '', s: [] }); });
-  let h = `<div class="muted" style="margin:0 4px 8px">沒記缺失就是合格。點大類打開 →「＋ 新增缺失」→ 選小項目和位置。</div>`;
+  let h = canWork(I)
+    ? `<div class="muted" style="margin:0 4px 8px">${roundName(I.round)}：沒記缺失就是合格。點大類打開 →「＋ 新增缺失」→ 選小項目和位置。</div>`
+    : `<div class="lockbar">🔒 ${roundName(I.round)}已完成，缺失已鎖定，要修改請找後台。</div>`;
   cats.forEach((ct, ci) => {
     const key = view.tk + '|' + ct.n, open = openCats.has(key);
     const ds = mine.filter(d => d.cat === ct.n), real = ds.filter(d => !isEmptyDef(d)), openN = real.filter(d => !d.fixed).length;
@@ -688,11 +1069,12 @@ VIEWS.trade = () => {
       h += `<div class="cat-b">`;
       if (ct.h) h += `<div class="tip">💡 ${esc(ct.h)}</div>`;
       ds.forEach((d, n) => { h += defHTML(d, n, ct, I, tr); });
-      h += `<button class="btn accent small" style="margin-top:8px" onclick="addDef(${ci})">＋ 新增缺失</button></div>`;
+      if (canWork(I)) h += `<button class="btn accent small" style="margin-top:8px" onclick="addDef(${ci})">＋ 新增缺失</button>`;
+      h += `</div>`;
     }
     h += `</div>`;
   });
-  h += `<button class="btn block ${I.checked[view.tk] ? '' : 'ghost'}" style="margin-top:12px" onclick="toggleChecked()">${I.checked[view.tk] ? '✔ 這個工項檢查完成（點一下取消）' : '這個工項檢查完成'}</button>`;
+  if (canWork(I)) h += `<button class="btn block ${I.checked[view.tk] ? '' : 'ghost'}" style="margin-top:12px" onclick="toggleChecked()">${I.checked[view.tk] ? '✔ 這個工項檢查完成（點一下取消）' : '這個工項檢查完成'}</button>`;
   app.innerHTML = h;
   view.cats = cats.map(x => x.n);
 };
@@ -701,13 +1083,24 @@ function defHTML(d, n, ct, I, tr) {
   const sum = [d.loc, d.type, d.subs.join('、')].filter(Boolean).join('｜') || '（還沒選）';
   if (!openDefs.has(d.id)) {
     return `<div class="def-s ${d.fixed ? 'is-fixed' : ''}" onclick="toggleDef(${a})">
-      <span class="grow">${n + 1}. ${esc(sum)}${d.note ? '　' + esc(d.note) : ''}</span>
-      ${d.photos.length ? `<span class="muted">📷${d.photos.length}</span>` : ''}
+      ${rTag(d)}<span class="grow">${n + 1}. ${esc(sum)}${d.note ? '　' + esc(d.note) : ''}</span>
+      ${d.photos.length ? `<span class="muted">📷${d.photos.length}</span>` : ''}${locked(I, d) && !isAdmin() ? '🔒' : ''}
       ${d.fixed ? '<span class="badge fix">已改善</span>' : ''}</div>`;
+  }
+  // 前一階段的缺失，複驗時標「已改善」（階段已完成就只有後台能改）
+  const fixBtn = (d.r || 1) < I.round || d.fixed
+    ? (canWork(I) ? `<button class="btn small fixbtn ${d.fixed ? '' : 'ghost'}" onclick="toggleFixed(${a})">${d.fixed ? '✔ 已改善（點一下取消）' : '標為已改善'}</button>` : '') : '';
+  if (!canEditDef(I, d)) {
+    return `<div class="ngbox def ${d.fixed ? 'is-fixed' : ''}">
+      <div class="row"><b class="grow">第 ${n + 1} 處 ${rTag(d)}</b><span class="muted" style="font-size:13px">🔒 只有後台能改</span>
+        <button class="btn ghost small" onclick="toggleDef(${a})">收起</button></div>
+      <div style="margin-top:6px">${esc(sum)}</div>${d.note ? `<div class="muted">${esc(d.note)}</div>` : ''}
+      <div class="photos">${d.photos.map(ph => `<div class="ph"><img data-pid="${ph}" onclick="viewPhoto('${ph}')"></div>`).join('')}</div>
+      ${fixBtn}</div>`;
   }
   const subs = [...ct.s]; d.subs.forEach(x => { if (!subs.includes(x)) subs.push(x); });
   return `<div class="ngbox def ${d.fixed ? 'is-fixed' : ''}">
-    <div class="row"><b class="grow">第 ${n + 1} 處</b>
+    <div class="row"><b class="grow">第 ${n + 1} 處 ${rTag(d)}</b>
       <button class="btn ghost small" onclick="toggleDef(${a})">收起</button>
       <button class="btn ghost small" style="color:var(--accent)" onclick="delDef(${a})">刪除</button></div>
     ${ct.t && ct.t.length ? `<div class="muted">種類</div><div class="chips">${ct.t.map((x, k) =>
@@ -720,46 +1113,54 @@ function defHTML(d, n, ct, I, tr) {
     <div class="photos">${d.photos.map(ph => `<div class="ph"><img data-pid="${ph}" onclick="viewPhoto('${ph}')"><button onclick="delPhoto(${a},'${ph}')">✕</button></div>`).join('')}
       <label class="addph">📷<span>拍照</span><input type="file" accept="image/*" capture="environment" onchange="addPhoto(${a},this)"></label>
       <label class="addph">🖼️<span>相簿</span><input type="file" accept="image/*" multiple onchange="addPhoto(${a},this)"></label></div>
-    ${I.round > 1 || d.fixed ? `<button class="btn small fixbtn ${d.fixed ? '' : 'ghost'}" onclick="toggleFixed(${a})">${d.fixed ? '✔ 複驗：已改善' : '複驗：標為已改善'}</button>` : ''}
+    ${fixBtn}
   </div>`;
 }
 const findDef = id => curU().insp.defs.find(d => d.id === id);
 const catDef = n => tradeOf(view.tk).cats.find(x => x.n === n) || { s: [] };
+// 改缺失前檢查權限（畫面已經擋了，這裡再保險一次）
+function editable(id) { const d = findDef(id); if (d && canEditDef(curU().insp, d)) return d; toast('這一處已鎖定，只有後台能改'); return null; }
 function toggleCat(ci) { const key = view.tk + '|' + view.cats[ci]; openCats.has(key) ? openCats.delete(key) : openCats.add(key); render(); }
 function toggleDef(id) { openDefs.has(id) ? openDefs.delete(id) : openDefs.add(id); render(); }
 function addDef(ci) {
-  const d = newDef(view.tk, view.cats[ci]); curU().insp.defs.push(d); openDefs.add(d.id); save(); render();
+  const I = curU().insp; if (!canWork(I)) return;
+  const d = newDef(view.tk, view.cats[ci], I.round); I.defs.push(d); openDefs.add(d.id); render();
 }
 async function delDef(id) {
-  const I = curU().insp, d = findDef(id);
+  const I = curU().insp, d = editable(id); if (!d) return;
   if (!isEmptyDef(d) && !confirm('刪除這一處缺失（含照片）？')) return;
+  const was = !isEmptyDef(d);
   for (const ph of d.photos) await photoDel(ph);
-  I.defs = I.defs.filter(x => x !== d); openDefs.delete(id); save(); render();
+  I.defs = I.defs.filter(x => x !== d); openDefs.delete(id); if (was) saveU(); render();
 }
 function toggleSub(id, k) {
-  const d = findDef(id), subs = [...catDef(d.cat).s]; d.subs.forEach(x => { if (!subs.includes(x)) subs.push(x); });
-  const x = subs[k], i = d.subs.indexOf(x); i < 0 ? d.subs.push(x) : d.subs.splice(i, 1); save(); render();
+  const d = editable(id); if (!d) return;
+  const subs = [...catDef(d.cat).s]; d.subs.forEach(x => { if (!subs.includes(x)) subs.push(x); });
+  const x = subs[k], i = d.subs.indexOf(x); i < 0 ? d.subs.push(x) : d.subs.splice(i, 1); saveU(); render();
 }
-function setLoc(id, k) { const d = findDef(id), l = curU().insp.locs[k]; d.loc = d.loc === l ? '' : l; save(); render(); }
-function setType(id, k) { const d = findDef(id), x = catDef(d.cat).t[k]; d.type = d.type === x ? '' : x; save(); render(); }
-function setNote(id, v) { findDef(id).note = v; save(); }
-function toggleFixed(id) { const d = findDef(id); d.fixed = !d.fixed; save(); render(); }
-function toggleChecked() { const I = curU().insp; I.checked[view.tk] = !I.checked[view.tk]; save(); render(); }
+function setLoc(id, k) { const d = editable(id); if (!d) return; const l = curU().insp.locs[k]; d.loc = d.loc === l ? '' : l; saveU(); render(); }
+function setType(id, k) { const d = editable(id); if (!d) return; const x = catDef(d.cat).t[k]; d.type = d.type === x ? '' : x; saveU(); render(); }
+function setNote(id, v) { const d = editable(id); if (!d) return; d.note = v; saveU(); }
+function toggleFixed(id) { const I = curU().insp; if (!canWork(I)) return; const d = findDef(id); d.fixed = !d.fixed; saveU(); render(); }
+function toggleChecked() { const I = curU().insp; if (!canWork(I)) return; I.checked[view.tk] = !I.checked[view.tk]; saveU(); render(); }
 async function addPhoto(id, input) {
-  const d = findDef(id);
+  const d = editable(id);
   const files = [...input.files]; input.value = '';
+  if (!d) return;
   for (const fl of files) {
-    try { const data = await compress(fl); const pid = uid(); await idbPut('photos', pid, data); photoCache[pid] = data; d.photos.push(pid); }
+    try { const data = await compress(fl); const pid = uid(); await idbPut('photos', pid, data); photoCache[pid] = data; d.photos.push(pid); outbox.ph.push(pid); }
     catch (e) { toast('照片儲存失敗：' + e.message); }
   }
-  save(); render();
+  saveU(); render();
 }
 async function delPhoto(id, pid) {
+  const d = editable(id); if (!d) return;
   if (!confirm('刪除這張照片？')) return;
-  const d = findDef(id); d.photos = d.photos.filter(x => x !== pid); save(); await photoDel(pid); render();
+  d.photos = d.photos.filter(x => x !== pid); saveU(); await photoDel(pid); render();
 }
 function viewPhoto(pid) {
-  document.getElementById('layer').innerHTML = `<div class="viewer" onclick="this.remove()"><img src="${photoCache[pid] || ''}"></div>`;
+  if (!photoCache[pid]) return;
+  document.getElementById('layer').innerHTML = `<div class="viewer" onclick="this.remove()"><img src="${photoCache[pid]}"></div>`;
 }
 
 // ── 彈出視窗 ─────────────────────────────
@@ -778,19 +1179,19 @@ VIEWS.report = () => {
   [...new Set(ds.map(d => d.k))].sort(tradeOrder).forEach(k => {
     const list = ds.filter(d => d.k === k), tr = tradeOf(k);
     body += `<h3>${tr.icon} ${esc(tr.name)}（${list.length} 處）</h3>
-      <table><thead><tr><th>#</th><th>位置</th><th>缺失內容</th><th>狀態</th></tr></thead><tbody>${list.map(d =>
-        `<tr><td>${++n}</td><td>${esc(d.loc || '—')}</td><td>${defDesc(d)}</td><td>${d.fixed ? '✔ 已改善' : '待改善'}</td></tr>`).join('')}</tbody></table>`;
+      <table><thead><tr><th>#</th><th>階段</th><th>位置</th><th>缺失內容</th><th>狀態</th></tr></thead><tbody>${list.map(d =>
+        `<tr><td>${++n}</td><td>${rShort(d.r)}</td><td>${esc(d.loc || '—')}</td><td>${defDesc(d)}</td><td>${d.fixed ? '✔ 已改善' : '待改善'}</td></tr>`).join('')}</tbody></table>`;
   });
   const todo = s.trades - s.checked;
   app.innerHTML = `<div class="card report">
     <h2>住戶驗屋缺失紀錄表</h2>
     <div>建案：${esc(p.name)}　戶別：<b>${esc(label)}</b><br>地址：${esc(p.addr || '—')}<br>
-      住戶：${esc(I.owner || '—')}　${esc(I.phone || '')}<br>驗屋日期：${esc(I.date || '—')}（${roundName(I.round)}${roundDone(I) ? '' : '，進行中'}）　陪驗人員：${esc(I.inspector || '—')}</div>
+      住戶：${esc(I.owner || '—')}　${esc(I.phone || '')}<br>驗屋日期：${esc(I.date || '—')}（${roundName(I.round)}${roundDone(I) ? '' : '，進行中'}）　驗屋人員：${esc(I.inspector || '—')}</div>
     <p><b>缺失共 ${s.def} 處</b>${s.fixed ? `，其中已改善 ${s.fixed} 處` : ''}；未列出的項目皆為合格。
       ${todo ? `<span class="noprint" style="color:var(--accent)">（還有 ${todo} 個工項沒按「檢查完成」）</span>` : ''}</p>
     ${n ? body : '<p>本次檢查無缺失。</p>'}
     <p style="font-size:14px;margin-top:16px">以上缺失經雙方現場確認，本公司將於　　年　　月　　日前改善完成，並通知住戶複驗。</p>
-    <div class="sign"><div>住戶簽名</div><div>公司陪驗人員</div><div>日期</div></div>
+    <div class="sign"><div>住戶簽名</div><div>公司驗屋人員</div><div>日期</div></div>
   </div>
   <div class="card noprint muted">按右上「列印／PDF」，印表機選「另存為 PDF」就能存成 PDF。手機 Chrome：右上選單 → 分享 → 列印。</div>`;
 };
@@ -826,8 +1227,8 @@ VIEWS.projReport = () => {
       const list = all.filter(x => x.d.k === k); if (!list.length) return; any = true;
       const tr = tradeOf(k);
       body += `<h3>${tr.icon} ${esc(tr.name)}（${list.length} 處）</h3>
-        <table><thead><tr><th>戶別</th><th>位置</th><th>缺失內容</th><th>狀態</th></tr></thead><tbody>${list.map(({ f, u, d }) =>
-          `<tr><td><b>${esc(unitLabel(f, u))}</b></td><td>${esc(d.loc || '—')}</td><td>${defDesc(d)}</td>
+        <table><thead><tr><th>戶別</th><th>階段</th><th>位置</th><th>缺失內容</th><th>狀態</th></tr></thead><tbody>${list.map(({ f, u, d }) =>
+          `<tr><td><b>${esc(unitLabel(f, u))}</b></td><td>${rShort(d.r)}</td><td>${esc(d.loc || '—')}</td><td>${defDesc(d)}</td>
            <td>${d.fixed ? '✔ 已改善' : '待改善'}</td></tr>`).join('')}</tbody></table>`;
     });
     if (!any) body += '<p>沒有缺失。</p>';
@@ -844,59 +1245,24 @@ VIEWS.guide = () => {
   setHeader('驗屋要領', true);
   app.innerHTML = `<div class="card"><b>📋 驗屋流程與心法</b><ol class="tips">${TIPS.map(t => `<li>${esc(t)}</li>`).join('')}</ol></div>
     <div class="card"><b>🧰 要帶的工具</b><ul class="tools">${TOOLS.map(([a, b]) => `<li><b>${esc(a)}</b>：${esc(b)}</li>`).join('')}</ul></div>
-    <div class="card muted">每個檢查項目旁邊的「?」有怎麼驗和參考標準。標準為業界常用值，實際以買賣合約與公司施工規範為準。</div>`;
+    <div class="card muted">每個大類打開後有「💡」怎麼驗和參考標準。標準為業界常用值，實際以買賣合約與公司施工規範為準。</div>`;
 };
-
-// ── 備份 ─────────────────────────────────
-const allUnits = () => state.projects.flatMap(p => p.floors.flatMap(f => f.units));
-async function exportAll() {
-  await saveNow();
-  const photos = {};
-  for (const u of allUnits()) for (const ph of unitPhotos(u)) photos[ph] = photoCache[ph] || await idbGet('photos', ph);
-  const blob = new Blob([JSON.stringify({ app: 'home-inspection', ver: 2, state, photos })], { type: 'application/json' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob); a.download = `驗屋備份_${today()}.json`;
-  a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
-}
-async function importAll(input) {
-  const fl = input.files[0]; input.value = ''; if (!fl) return;
-  try {
-    const d = JSON.parse(await fl.text());
-    if (d.app !== 'home-inspection' || !d.state || !Array.isArray(d.state.projects)) throw new Error('不是驗屋系統 v2 的備份檔');
-    let add = 0;
-    for (const p of d.state.projects) {
-      if (state.projects.some(x => x.id === p.id)) continue;
-      state.projects.push(p); add++;
-      for (const f of p.floors) for (const u of f.units) { migrateUnit(u); for (const ph of unitPhotos(u)) if (d.photos && d.photos[ph]) await idbPut('photos', ph, d.photos[ph]); }
-    }
-    save(); toast(`匯入 ${add} 個建案${d.state.projects.length - add ? `（${d.state.projects.length - add} 個已存在略過）` : ''}`); render();
-  } catch (e) { toast('匯入失敗：' + e.message); }
-}
 
 function toast(m) {
   const t = document.createElement('div'); t.className = 'toast'; t.textContent = m;
-  document.body.appendChild(t); setTimeout(() => t.remove(), 2500);
+  document.body.appendChild(t); setTimeout(() => t.remove(), 2800);
 }
 
 // ── 啟動 ─────────────────────────────────
 (async () => {
-  try { state = (await idbGet('kv', 'state')) || { projects: [] }; }
-  catch (e) { toast('讀取資料失敗：' + e.message); }
+  try {
+    state = (await idbGet('kv', CK)) || { projects: [] };
+    outbox = (await idbGet('kv', OK)) || outbox; outbox.dropU = outbox.dropU || {};
+  } catch (e) { toast('讀取資料失敗：' + e.message); }
   if (!Array.isArray(state.projects)) state.projects = [];
-  // 舊版（依房間分）的紀錄轉成依工項分
-  let mig = 0;
-  state.projects.forEach(p => p.floors.forEach(f => f.units.forEach(u => { if (u.insp && !u.insp.defs) { migrateUnit(u); mig++; } })));
-  // 位置改名：主臥 → 主臥室、次臥 → 次臥室（v7）
-  const RN = { 主臥: '主臥室', 次臥: '次臥室' };
-  state.projects.forEach(p => p.floors.forEach(f => f.units.forEach(u => {
-    const I = u.insp; if (!I || !I.locs) return;
-    if (I.locs.some(l => RN[l]) || I.defs.some(d => RN[d.loc])) {
-      I.locs = [...new Set(I.locs.map(l => RN[l] || l))]; I.defs.forEach(d => { if (RN[d.loc]) d.loc = RN[d.loc]; }); mig++;
-    }
-  })));
-  if (mig) { saveNow(); toast(`已更新 ${mig} 戶的舊資料格式`); }
+  view = auth ? { name: 'home' } : { name: 'login' };
   render(true);
-  // 請瀏覽器不要在空間不足時自動清掉驗屋資料
+  if (auth) { await pull(true); sync(); }
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
   if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js');
 })();
