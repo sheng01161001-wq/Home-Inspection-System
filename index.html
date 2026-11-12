@@ -166,7 +166,7 @@ input:disabled{background:#f1f3f5;color:#868e96}
 <script src="data.js"></script>
 <script>
 'use strict';
-const VERSION = 'v9';
+const VERSION = 'v10';
 // 後端網址（Google Apps Script 網頁應用程式）
 const API_DEFAULT = 'https://script.google.com/macros/s/AKfycbxmuP-JQyjoIb58P8j83R6sA1WJMGBON3WHP_gNVDLKDmSkIhdKoVuBJx7iNASHRCwe/exec';
 
@@ -424,7 +424,7 @@ const isEmptyDef = d => !d.type && !d.subs.length && !d.loc && !d.note && !d.pho
 const realDefs = I => I.defs.filter(d => !isEmptyDef(d));
 // 這一戶要檢查的工項
 const unitTrades = I => {
-  const ks = TRADES.filter(t => !t.optional || I.common).map(t => t.k);
+  const ks = TRADES.map(t => t.k); // 公設與車位每戶都驗
   realDefs(I).forEach(d => { if (!ks.includes(d.k)) ks.push(d.k); });
   return ks.sort(tradeOrder);
 };
@@ -682,7 +682,6 @@ VIEWS.newProject = () => {
     <div class="muted" style="margin-top:4px">例：2～10F 是 A,B,C,D；11～14F 只剩 A,B，就分兩段。一樓店面、地下室之後可在建案頁自己加。</div>
     <label class="f">各戶別屋型（會自動產生對應的位置，之後也能在戶別裡調整）</label>
     <div id="p_layouts"></div>
-    <label class="row" style="margin-top:10px"><input type="checkbox" id="p_common"> 每戶都檢查公設與停車位</label>
     <button class="btn accent block" onclick="createProject()">建立建案</button>
   </div>`;
   drawLayouts();
@@ -731,7 +730,7 @@ function createProject() {
   const layouts = {};
   document.querySelectorAll('#p_layouts [data-u]').forEach(r => {
     const n = [...r.querySelectorAll('input')].map(i => i.value);
-    layouts[r.dataset.u] = { beds: num(n[0], 0, 8), baths: num(n[1], 0, 6), balc: num(n[2], 0, 5), common: document.getElementById('p_common').checked };
+    layouts[r.dataset.u] = { beds: num(n[0], 0, 8), baths: num(n[1], 0, 6), balc: num(n[2], 0, 5), common: false };
   });
   const floors = [...byFloor.keys()].sort((a, b) => b - a).map(k => ({ id: uid(), name: k > 0 ? k + 'F' : 'B' + (-k),
     units: byFloor.get(k).map(n => ({ id: uid(), name: n, layout: { ...layouts[n] }, insp: null, _v: 0 })) }));
@@ -920,7 +919,6 @@ VIEWS.unit = () => {
         <div><div class="muted">陽台數</div><input type="number" id="i_balc" value="${L.balc}" min="0" max="5" oninput="previewLocs()" ${dis}></div>
       </div>
       <div class="muted" id="i_locs" style="margin-top:6px"></div>
-      <label class="row" style="margin-top:10px"><input type="checkbox" id="i_common" ${L.common ? 'checked' : ''} ${dis}> 包含公設與停車位檢查</label>
       <button class="btn accent block" onclick="startInsp()">開始驗屋</button></div>`;
     previewLocs();
     return;
@@ -959,7 +957,7 @@ VIEWS.unit = () => {
 };
 function layoutFromForm() {
   const v = id => document.getElementById(id).value.trim();
-  return { beds: num(v('i_beds'), 0, 8), baths: num(v('i_baths'), 0, 6), balc: num(v('i_balc'), 0, 5), common: document.getElementById('i_common').checked };
+  return { beds: num(v('i_beds'), 0, 8), baths: num(v('i_baths'), 0, 6), balc: num(v('i_balc'), 0, 5), common: !!(curU() && curU().layout.common) };
 }
 function previewLocs() { document.getElementById('i_locs').textContent = '位置：' + makeLocs(layoutFromForm()).join('、'); }
 function startInsp() {
@@ -977,7 +975,6 @@ function unitLayoutSheet() {
       <div><div class="muted">衛浴數</div><input type="number" id="i_baths" value="${L.baths}" min="0" max="6" oninput="previewLocs()"></div>
       <div><div class="muted">陽台數</div><input type="number" id="i_balc" value="${L.balc}" min="0" max="5" oninput="previewLocs()"></div></div>
     <div class="muted" id="i_locs" style="margin-top:6px"></div>
-    <label class="row" style="margin-top:10px"><input type="checkbox" id="i_common" ${L.common ? 'checked' : ''}> 包含公設與停車位檢查</label>
     <div class="muted" style="font-size:13px">已經記過缺失的位置會保留。</div>
     <button class="btn accent block" onclick="applyUnitLayout()">套用</button><button class="btn ghost block" onclick="closeSheet()">取消</button>`);
   previewLocs();
